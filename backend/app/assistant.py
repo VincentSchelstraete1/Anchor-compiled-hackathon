@@ -88,10 +88,14 @@ EVENT_WORDS = {
 }
 MEMORY_WORDS = {"memory", "memories", "remember", "did", "shared", "together"}
 PREFERENCE_WORDS = {
+    "hobbies",
+    "hobby",
     "like",
     "likes",
     "love",
     "loves",
+    "pastime",
+    "pastimes",
     "favorite",
     "favourite",
     "prefer",
@@ -112,6 +116,8 @@ PERSONAL_FACT_WORDS = {
     "favorite",
     "favourite",
     "glasses",
+    "hobbies",
+    "hobby",
     "keys",
     "location",
     "medication",
@@ -121,6 +127,8 @@ PERSONAL_FACT_WORDS = {
     "preference",
     "preferences",
     "phone",
+    "pastime",
+    "pastimes",
     "routine",
     "routines",
     "schedule",
@@ -299,6 +307,10 @@ def _is_personal_query(
     if words & {"my", "our"} and words & PERSONAL_FACT_WORDS:
         return True
     if "i" in words and words & {"age", "birthday", "born", "from", "live", "lived"}:
+        return True
+    if "i" in words and words & (
+        MEMORY_WORDS | PREFERENCE_WORDS | ROUTINE_WORDS | LOCATION_WORDS
+    ):
         return True
     if words & {"we", "our"} and words & {
         "family",
