@@ -106,6 +106,86 @@ def test_uploaded_photo_reference_persists_across_restart(tmp_path: Path) -> Non
         assert removed.json()["photo_url"] is None
 
 
+def test_fictional_demo_seed_is_idempotent_persistent_and_available_to_companion(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "demo.db"
+    app = create_app(database_path, seed=False, uploads_path=tmp_path / "uploads")
+    with TestClient(app) as demo_client:
+        first = demo_client.post("/demo/seed")
+        second = demo_client.post("/demo/seed")
+
+        assert first.status_code == 200
+        assert first.json() == {"seeded": True, "people": 4, "memories": 10, "events": 5}
+        assert second.json() == {"seeded": False, "people": 4, "memories": 10, "events": 5}
+
+        context = demo_client.get("/conversation/context").json()
+        assert len(context["people"]) == 4
+        assert len(context["memories"]) == 10
+        assert len(context["upcoming_events"]) == 5
+        margaret = next(person for person in context["people"] if person["name"] == "Margaret")
+        assert margaret["description"].startswith("Fictional demo —")
+
+        glasses = next(
+            memory
+            for memory in context["memories"]
+            if memory["title"] == "Where Margaret keeps her glasses"
+        )
+        updated_content = "Margaret now keeps her glasses beside the blue clock."
+        updated = demo_client.patch(
+            f"/memories/{glasses['id']}",
+            json={"content": updated_content},
+        )
+        assert updated.status_code == 200
+        refreshed_context = demo_client.get("/conversation/context").json()
+        assert any(
+            memory["id"] == glasses["id"] and memory["content"] == updated_content
+            for memory in refreshed_context["memories"]
+        )
+
+    restarted = create_app(database_path, seed=True, uploads_path=tmp_path / "uploads")
+    with TestClient(restarted) as restarted_client:
+        assert len(restarted_client.get("/people").json()["items"]) == 4
+        assert restarted_client.post("/demo/seed").json()["seeded"] is False
+
+
+def test_existing_user_data_is_not_automatically_seeded(tmp_path: Path) -> None:
+    database_path = tmp_path / "existing.db"
+    empty_app = create_app(database_path, seed=False, uploads_path=tmp_path / "uploads")
+    with TestClient(empty_app) as existing_client:
+        person = create_person(existing_client, name="Existing Person")
+
+    restarted = create_app(database_path, seed=True, uploads_path=tmp_path / "uploads")
+    with TestClient(restarted) as restarted_client:
+        assert restarted_client.get("/people").json()["items"] == [person]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Who is Elena?",
+        "Who is Sophie?",
+        "What hobbies do I enjoy?",
+        "Where do I usually keep my glasses?",
+        "Where do I usually keep my keys?",
+        "What do I remember about Yosemite?",
+        "Who is visiting me?",
+        "When is my appointment with Dr. Chen?",
+        "What is my afternoon tea routine?",
+        "What is my favorite garden activity?",
+    ],
+)
+def test_fictional_demo_questions_are_grounded(client: TestClient, question: str) -> None:
+    seeded = client.post("/demo/seed")
+    assert seeded.status_code == 200
+
+    response = client.post("/chat", json={"message": question})
+
+    assert response.status_code == 200
+    assert response.json()["grounded"] is True
+    assert response.json()["sources"]
+
+
 def test_people_crud_validation_not_found_and_reference_conflict(client: TestClient) -> None:
     person = create_person(client)
     assert person["name"] == "Elena"

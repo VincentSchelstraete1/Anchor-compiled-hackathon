@@ -23,6 +23,13 @@ Response `200`:
 { "status": "ok" }
 ```
 
+## Fictional demo data
+
+- `POST /demo/seed` → `200 { "seeded": boolean, "people": number, "memories": number, "events": number }`.
+- Adds the clearly labeled fictional Margaret demonstration dataset using the normal people, memory, and event tables.
+- The operation is idempotent. Repeated calls return `seeded: false` and do not create duplicates.
+- Fresh empty databases receive the same seed during initialization. Databases containing user-created people are never seeded automatically.
+
 ## People
 
 ```ts

@@ -10,6 +10,12 @@ export interface Person {
 export type PersonCreate = Omit<Person, "id">;
 export type PersonUpdate = Partial<PersonCreate>;
 export interface PhotoUpload { photo_url: string; }
+export interface DemoSeedResult {
+  seeded: boolean;
+  people: number;
+  memories: number;
+  events: number;
+}
 
 export interface Memory {
   id: number;

@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS handoffs (
     answered_at TEXT,
     delivered_at TEXT
 );
+CREATE TABLE IF NOT EXISTS demo_seeds (
+    key TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_memories_person ON memories(person_id);
 CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_time);
 CREATE INDEX IF NOT EXISTS idx_handoffs_status ON handoffs(status);
@@ -77,43 +81,156 @@ def initialize_database(path: Path | str = DATABASE_PATH, *, seed: bool = True) 
     try:
         connection.executescript(SCHEMA)
         if seed and connection.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
-            _seed_demo(connection)
+            seed_demo(connection)
         connection.commit()
     finally:
         connection.close()
 
 
-def _seed_demo(connection: sqlite3.Connection) -> None:
-    cursor = connection.execute(
-        "INSERT INTO people(name, relationship, description, photo_url) VALUES (?, ?, ?, ?)",
+def seed_demo(connection: sqlite3.Connection) -> bool:
+    seed_key = "margaret-fictional-v1"
+    if connection.execute("SELECT 1 FROM demo_seeds WHERE key = ?", (seed_key,)).fetchone():
+        return False
+
+    people: dict[str, int] = {}
+    for name, relationship, description in (
+        (
+            "Margaret",
+            "Self",
+            "Fictional demo — Margaret is the person using Anchor. This profile is sample data for the hackathon demonstration.",
+        ),
         (
             "Elena",
-            "daughter",
-            "Margaret's daughter and primary caregiver.",
-            "/images/elena.jpg",
+            "Daughter",
+            "Fictional demo — Margaret's daughter, primary caregiver, and caregiver-approved contact.",
+        ),
+        (
+            "Sophie",
+            "Granddaughter",
+            "Fictional demo — Margaret's granddaughter. They enjoy baking together.",
+        ),
+        (
+            "Dr. Chen",
+            "Primary care doctor",
+            "Fictional demo — Margaret's doctor and a caregiver-approved contact for appointment information.",
+        ),
+    ):
+        cursor = connection.execute(
+            "INSERT INTO people(name, relationship, description, photo_url) VALUES (?, ?, ?, ?)",
+            (name, relationship, description, None),
+        )
+        people[name] = int(cursor.lastrowid)
+
+    created_at = utc_text()
+    memories = (
+        (
+            "Margaret's favorite pastimes",
+            "Margaret enjoys gardening, baking, and listening to classical music, especially in the afternoon.",
+            "Demo · Hobbies",
+        ),
+        (
+            "Afternoon tea",
+            "Margaret enjoys afternoon tea at about 3:00 PM, usually with Earl Grey tea and a plain biscuit.",
+            "Demo · Important preference",
+        ),
+        (
+            "Morning routine",
+            "Margaret likes to open the bedroom curtains after breakfast and check the garden from the window.",
+            "Demo · Daily routine",
+        ),
+        (
+            "Evening routine",
+            "Margaret usually listens to classical music in the sitting room after dinner before getting ready for bed.",
+            "Demo · Daily routine",
+        ),
+        (
+            "Where Margaret keeps her glasses",
+            "Margaret usually keeps her glasses on the bedside table next to the lamp.",
+            "Demo · Important item location",
+        ),
+        (
+            "Where Margaret keeps her keys",
+            "Margaret's keys are usually in the top kitchen drawer beside the tea towels.",
+            "Demo · Important item location",
+        ),
+        (
+            "A favorite garden activity",
+            "Margaret especially enjoys tending her roses and checking whether the tomatoes are ready to pick.",
+            "Demo · Favorite activity",
+        ),
+        (
+            "Baking with Sophie",
+            "Margaret and Sophie enjoy baking lemon drizzle cake together. Sophie measures the flour while Margaret prepares the lemons.",
+            "Demo · Favorite activity",
+        ),
+        (
+            "The family trip to Yosemite",
+            "Margaret remembers a family trip to Yosemite when Elena was young. They picnicked near the valley and watched the light change on Half Dome.",
+            "Demo · Meaningful memory",
+        ),
+        (
+            "Elena and Sophie",
+            "Elena is Margaret's daughter, and Sophie is Elena's daughter and Margaret's granddaughter.",
+            "Demo · Family",
         ),
     )
-    elena_id = cursor.lastrowid
-    connection.execute(
+    connection.executemany(
         """INSERT INTO memories(person_id, title, content, category, created_at)
         VALUES (?, ?, ?, ?, ?)""",
+        [
+            (people["Margaret"], title, content, category, created_at)
+            for title, content, category in memories
+        ],
+    )
+
+    now = datetime.now(UTC)
+    events = (
         (
-            elena_id,
-            "Sunday garden",
-            "Margaret and Elena enjoy tending the garden together on Sundays.",
-            "family",
-            utc_text(),
+            "Elena visits later",
+            "Fictional demo — Elena is scheduled to visit Margaret. This is an expected visit, not a confirmed arrival.",
+            now + timedelta(hours=2),
+            people["Elena"],
+            30,
         ),
+        (
+            "Appointment with Dr. Chen",
+            "Fictional demo — routine check-up at the neighborhood clinic.",
+            now + timedelta(days=1, hours=1),
+            people["Dr. Chen"],
+            60,
+        ),
+        (
+            "Sophie visits",
+            "Fictional demo — Sophie is scheduled to visit and bake with Margaret.",
+            now + timedelta(days=3),
+            people["Sophie"],
+            60,
+        ),
+        (
+            "Afternoon tea reminder",
+            "Fictional demo — it is nearly time for Margaret's usual afternoon tea.",
+            now + timedelta(hours=4),
+            people["Margaret"],
+            15,
+        ),
+        (
+            "Put glasses on the bedside table",
+            "Fictional demo — a gentle evening reminder for Margaret's usual glasses location.",
+            now + timedelta(hours=8),
+            people["Margaret"],
+            10,
+        ),
+    )
+    connection.executemany(
+        """INSERT INTO events(title, description, start_time, person_id, reminder_minutes, status)
+        VALUES (?, ?, ?, ?, ?, 'scheduled')""",
+        [
+            (title, description, utc_text(start_time), person_id, reminder_minutes)
+            for title, description, start_time, person_id, reminder_minutes in events
+        ],
     )
     connection.execute(
-        """INSERT INTO events(title, description, start_time, person_id, reminder_minutes, status)
-        VALUES (?, ?, ?, ?, ?, ?)""",
-        (
-            "Elena visits",
-            "Elena is scheduled to visit Margaret.",
-            utc_text(datetime.now(UTC) + timedelta(hours=1)),
-            elena_id,
-            30,
-            "scheduled",
-        ),
+        "INSERT INTO demo_seeds(key, created_at) VALUES (?, ?)",
+        (seed_key, created_at),
     )
+    return True

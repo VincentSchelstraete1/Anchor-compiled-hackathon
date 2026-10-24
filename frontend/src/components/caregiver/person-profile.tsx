@@ -11,6 +11,7 @@ import type { Event, Memory, Person, PersonCreate } from "@/lib/api/types";
 import { resolvePhotoUrl } from "@/lib/api/photos";
 import { caregiverApi } from "./api";
 import { PersonForm } from "./person-form";
+import { isDemoPerson } from "./demo";
 import { EmptyState, ErrorState, formatDateTime, LoadingState, Modal, Notice, Surface } from "./ui";
 
 export function PersonProfile() {
@@ -70,7 +71,7 @@ export function PersonProfile() {
             {person.photo_url ? <Image src={resolvePhotoUrl(person.photo_url)} alt={`Portrait of ${person.name}`} fill sizes="(min-width: 768px) 40vw, 100vw" className="object-cover" unoptimized priority /> : <div className="grid h-full min-h-72 place-items-center text-[#728a76]"><UserRound className="size-24" /></div>}
           </div>
           <div className="flex flex-col justify-center p-7 sm:p-10 lg:p-14">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[#b9684f]">{person.relationship}</p>
+            <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold uppercase tracking-[0.2em] text-[#b9684f]">{person.relationship}</p>{isDemoPerson(person) && <span className="rounded-full bg-[#f6e5c7] px-2.5 py-1 text-xs font-semibold text-[#7b582f]">Fictional demo profile</span>}</div>
             <h1 className="mt-3 font-serif text-4xl font-semibold tracking-tight sm:text-5xl">{person.name}</h1>
             <p className="mt-5 max-w-xl text-base leading-7 text-muted-foreground">{person.description || "Add a few details that make this person feel familiar."}</p>
             <div className="mt-8 flex flex-wrap gap-3"><Button onClick={() => setEditing(true)}><Pencil /> Edit profile</Button><Button asChild variant="outline"><Link href={`/caregiver/memories?person_id=${person.id}`}>Add a memory</Link></Button></div>
