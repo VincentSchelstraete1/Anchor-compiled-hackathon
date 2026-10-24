@@ -1,31 +1,44 @@
-import { AudioLines, Brain, Mic, Square } from "lucide-react";
+import { AudioLines, Brain, Mic, MicOff } from "lucide-react";
 
-export type Phase = "ready" | "listening" | "thinking" | "speaking";
+export type OrbPhase = "idle" | "listening" | "processing" | "speaking";
 
-const LABELS: Record<Phase, string> = { ready: "Ready", listening: "Listening", thinking: "Thinking", speaking: "Speaking" };
+const ACTION: Record<OrbPhase, string> = {
+  idle: "Talk to Anchor",
+  listening: "Stop listening",
+  processing: "Anchor is thinking",
+  speaking: "Interrupt and talk",
+};
 
-export function VoiceOrb({ phase, onPress, disabled }: { phase: Phase; onPress: () => void; disabled?: boolean }) {
-  const Icon = phase === "listening" ? Square : phase === "thinking" ? Brain : phase === "speaking" ? AudioLines : Mic;
-  const action = phase === "listening" ? "Stop listening" : phase === "ready" ? "Talk to Anchor" : phase === "speaking" ? "Interrupt and talk" : "Thinking";
+/** The single obvious microphone control. Rings pulse while listening; bars move while speaking. */
+export function VoiceOrb({ phase, unavailable, onPress }: { phase: OrbPhase; unavailable?: boolean; onPress: () => void }) {
+  const Icon = unavailable ? MicOff : phase === "processing" ? Brain : phase === "speaking" ? AudioLines : Mic;
   return (
-    <div className="flex items-center justify-center gap-6 lg:justify-start">
+    <div className="relative size-32 shrink-0">
+      {phase === "listening" ? (
+        <>
+          <span aria-hidden="true" className="anchor-ring absolute inset-0 rounded-full bg-[var(--a-sage)] opacity-40" />
+          <span aria-hidden="true" className="anchor-ring anchor-ring-2 absolute inset-0 rounded-full bg-[var(--a-sage)] opacity-40" />
+        </>
+      ) : null}
       <button
         type="button"
         onClick={onPress}
-        disabled={disabled || phase === "thinking"}
-        aria-label={action}
-        className={`relative flex size-28 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md outline-offset-4 focus-visible:outline-4 focus-visible:outline-ring disabled:opacity-70 ${
-          phase === "listening" ? "motion-safe:animate-pulse ring-8 ring-primary/30" : ""
+        disabled={phase === "processing"}
+        aria-label={ACTION[phase]}
+        className={`relative flex size-full items-center justify-center rounded-full text-[var(--a-on-accent)] shadow-md outline-offset-4 transition-colors focus-visible:outline-4 focus-visible:outline-[var(--a-sage)] disabled:opacity-80 ${
+          phase === "speaking" ? "bg-[var(--a-terra)]" : "bg-[var(--a-sage)]"
         }`}
       >
-        <Icon aria-hidden="true" className="size-12" />
+        {phase === "speaking" ? (
+          <span aria-hidden="true" className="flex h-14 items-center gap-1.5">
+            {[0, 0.2, 0.4, 0.1, 0.3].map((delay, i) => (
+              <span key={i} className="anchor-bar h-full w-2 rounded-full bg-current" style={{ animationDelay: `${delay}s` }} />
+            ))}
+          </span>
+        ) : (
+          <Icon aria-hidden="true" className="size-14" />
+        )}
       </button>
-      <div>
-        <p className="text-4xl font-semibold" data-phase={phase}>
-          {LABELS[phase]}
-        </p>
-        <p className="text-lg text-muted-foreground">Hold Space to talk</p>
-      </div>
     </div>
   );
 }

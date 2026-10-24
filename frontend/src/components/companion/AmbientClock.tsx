@@ -1,24 +1,20 @@
 "use client";
 
+import { SERIF } from "./AmbientDisplay";
 import { useNow } from "./useNow";
 
-function greeting(hour: number): string {
-  if (hour < 5) return "Good night";
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
-}
-
-export function AmbientClock() {
+export function AmbientClock({ line }: { line: string }) {
   const now = useNow();
   return (
-    <section aria-label="Current time and date" className="text-center lg:text-left">
-      <p className="text-2xl text-muted-foreground">{now ? greeting(now.getHours()) : " "}</p>
-      <p className="text-7xl font-semibold tabular-nums tracking-tight sm:text-8xl xl:text-9xl">
+    <section aria-label="Current time and date">
+      <p className={`${SERIF} text-[clamp(5rem,13vw,11rem)] font-medium leading-none tracking-tight tabular-nums`}>
         {now ? now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "--:--"}
       </p>
-      <p className="mt-2 text-3xl">
+      <p className="mt-3 text-3xl text-[var(--a-muted)]">
         {now ? now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : " "}
+      </p>
+      <p aria-live="off" className={`${SERIF} mt-5 min-h-[2.5rem] text-3xl text-[var(--a-sage)] sm:text-4xl`}>
+        {line || " "}
       </p>
     </section>
   );
