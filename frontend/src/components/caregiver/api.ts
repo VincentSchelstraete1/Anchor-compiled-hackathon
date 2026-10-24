@@ -9,6 +9,9 @@ import type {
   Memory,
   MemoryCreate,
   MemoryUpdate,
+  Medication,
+  MedicationCreate,
+  MedicationUpdate,
   Person,
   PersonCreate,
   PersonUpdate,
@@ -64,6 +67,12 @@ export const caregiverApi = {
     update: (id: number, data: MemoryUpdate) =>
       request<Memory>(`/memories/${id}`, { method: "PATCH", ...json(data) }),
     remove: (id: number) => request<void>(`/memories/${id}`, { method: "DELETE" }),
+  },
+  medications: {
+    list: (query = "") => request<ListResponse<Medication>>(`/medications${query}`),
+    create: (data: MedicationCreate) => request<Medication>("/medications", { method: "POST", ...json(data) }),
+    update: (id: number, data: MedicationUpdate) => request<Medication>(`/medications/${id}`, { method: "PATCH", ...json(data) }),
+    remove: (id: number) => request<void>(`/medications/${id}`, { method: "DELETE" }),
   },
   events: {
     list: (query = "") => request<ListResponse<Event>>(`/events${query}`),

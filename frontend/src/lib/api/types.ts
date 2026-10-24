@@ -15,6 +15,7 @@ export interface DemoSeedResult {
   people: number;
   memories: number;
   events: number;
+  medications: number;
 }
 
 export interface Memory {
@@ -27,6 +28,22 @@ export interface Memory {
 }
 export type MemoryCreate = Omit<Memory, "id" | "created_at">;
 export type MemoryUpdate = Partial<MemoryCreate>;
+
+export interface Medication {
+  id: number;
+  person_id: number;
+  name: string;
+  purpose: string;
+  dosage: string;
+  frequency: string;
+  location: string;
+  refill_date: string | null;
+  notes: string;
+  active: boolean;
+  created_at: ISODateTime;
+}
+export type MedicationCreate = Omit<Medication, "id" | "created_at">;
+export type MedicationUpdate = Partial<MedicationCreate>;
 
 export type EventStatus = "scheduled" | "completed" | "cancelled";
 export interface Event {
@@ -70,6 +87,7 @@ export interface ConversationContext {
   messages: ConversationMessage[];
   people: Person[];
   memories: Memory[];
+  medications: Medication[];
   upcoming_events: Event[];
   pending_handoffs: Handoff[];
 }
@@ -77,7 +95,7 @@ export interface ChatRequest { message: string; }
 export interface ChatResponse {
   message: ConversationMessage;
   grounded: boolean;
-  sources: Array<{ type: "person" | "memory" | "event" | "handoff"; id: number }>;
+  sources: Array<{ type: "person" | "memory" | "event" | "handoff" | "medication"; id: number }>;
   handoff_offered: boolean;
 }
 

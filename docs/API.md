@@ -25,7 +25,7 @@ Response `200`:
 
 ## Fictional demo data
 
-- `POST /demo/seed` → `200 { "seeded": boolean, "people": number, "memories": number, "events": number }`.
+- `POST /demo/seed` → `200 { "seeded": boolean, "people": number, "memories": number, "events": number, "medications": number }`.
 - Adds the clearly labeled fictional Margaret demonstration dataset using the normal people, memory, and event tables.
 - The operation is idempotent. Repeated calls return `seeded: false` and do not create duplicates.
 - Fresh empty databases receive the same seed during initialization. Databases containing user-created people are never seeded automatically.
@@ -89,6 +89,37 @@ type MemoryCreate = Omit<Memory, "id" | "created_at">;
 type MemoryUpdate = Partial<MemoryCreate>;
 ```
 
+## Medications
+
+```ts
+interface Medication {
+  id: number;
+  person_id: number;
+  name: string;
+  purpose: string;
+  dosage: string;
+  frequency: string;
+  location: string;
+  refill_date: string | null;
+  notes: string;
+  active: boolean;
+  created_at: string;
+}
+```
+
+`name` and `dosage` have a 120-character maximum; `frequency` has a 240-character maximum. `purpose` and `location` have a 500-character maximum. `notes` has a 2,000-character maximum. `refill_date` is an ISO 8601 calendar date (`YYYY-MM-DD`) or `null`. Medication details are caregiver-entered records and must not be treated as medical advice.
+
+- `GET /medications?person_id={id}&active={true|false}` → `200 { "items": Medication[] }`, active first and earliest refill first.
+- `POST /medications` with `MedicationCreate` → `201 Medication`.
+- `GET /medications/{medication_id}` → `200 Medication`.
+- `PATCH /medications/{medication_id}` with at least one `MedicationUpdate` field → `200 Medication`.
+- `DELETE /medications/{medication_id}` → `204`.
+
+```ts
+type MedicationCreate = Omit<Medication, "id" | "created_at">;
+type MedicationUpdate = Partial<MedicationCreate>;
+```
+
 ## Events and reminders
 
 ```ts
@@ -135,12 +166,13 @@ interface ConversationContext {
   messages: ConversationMessage[];
   people: Person[];
   memories: Memory[];
+  medications: Medication[];
   upcoming_events: Event[];
   pending_handoffs: Handoff[];
 }
 ```
 
-- `GET /conversation/context` → `200 ConversationContext`. `messages` is the latest 12 in chronological order; `upcoming_events` contains scheduled events in the next seven days; `pending_handoffs` includes `pending` and `answered` items.
+- `GET /conversation/context` → `200 ConversationContext`. `messages` is the latest 12 in chronological order; `medications` contains caregiver-entered active and inactive medicine records; `upcoming_events` contains scheduled events in the next seven days; `pending_handoffs` includes `pending` and `answered` items.
 - `GET /conversation/messages?limit={1..50}` → `200 { "items": ConversationMessage[] }`, chronological; default `12`.
 - `DELETE /conversation/messages` → `204`; clears short-term transcript only and never deletes personal data.
 - `POST /chat` with `{ "message": string }` → `200 ChatResponse`. The server persists both user and assistant messages.
@@ -150,7 +182,7 @@ interface ChatResponse {
   message: ConversationMessage;
   grounded: boolean;
   sources: Array<{
-    type: "person" | "memory" | "event" | "handoff";
+    type: "person" | "memory" | "event" | "handoff" | "medication";
     id: number;
   }>;
   handoff_offered: boolean;
@@ -158,6 +190,8 @@ interface ChatResponse {
 ```
 
 `grounded` is true only when every personal claim in the answer is supported by the listed stored records. For greetings and non-personal conversational text it may be false with no sources. When the answer would require an unknown personal fact, the response must state that it does not know, set `handoff_offered: true`, and include no invented claim. Calling `/chat` never creates a handoff; consent is a separate explicit request.
+
+Medication answers may repeat caregiver-entered name, purpose, dose, frequency, location, and refill information with `medication` sources. Questions about changing, skipping, doubling, making up, or combining doses must not produce individualized clinical advice: the response directs the person to the prescription label and a caregiver, pharmacist, or clinician, and offers a caregiver handoff.
 
 Example unknown answer:
 

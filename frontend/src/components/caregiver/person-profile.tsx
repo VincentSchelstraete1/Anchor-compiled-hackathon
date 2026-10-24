@@ -1,13 +1,13 @@
 "use client";
 
-import { ArrowLeft, CalendarDays, Clock3, Heart, Pencil, UserRound } from "lucide-react";
+import { ArrowLeft, CalendarDays, Clock3, Heart, MapPin, Pencil, Pill, UserRound } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import type { Event, Memory, Person, PersonCreate } from "@/lib/api/types";
+import type { Event, Medication, Memory, Person, PersonCreate } from "@/lib/api/types";
 import { resolvePhotoUrl } from "@/lib/api/photos";
 import { caregiverApi } from "./api";
 import { PersonForm } from "./person-form";
@@ -20,6 +20,7 @@ export function PersonProfile() {
   const [person, setPerson] = useState<Person | null>(null);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  const [medications, setMedications] = useState<Medication[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -31,14 +32,16 @@ export function PersonProfile() {
     try {
       if (!Number.isInteger(personId) || personId < 1) throw new Error("This person profile is not valid.");
       const from = new Date().toISOString();
-      const [personData, memoryData, eventData] = await Promise.all([
+      const [personData, memoryData, eventData, medicationData] = await Promise.all([
         caregiverApi.people.get(personId),
         caregiverApi.memories.list({ person_id: personId }),
         caregiverApi.events.list(`?from=${encodeURIComponent(from)}&status=scheduled`),
+        caregiverApi.medications.list(`?person_id=${personId}&active=true`),
       ]);
       setPerson(personData);
       setMemories(memoryData.items);
       setEvents(eventData.items.filter((event) => event.person_id === personId));
+      setMedications(medicationData.items);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load this profile.");
     } finally {
@@ -90,6 +93,10 @@ export function PersonProfile() {
           <Button asChild variant="outline" className="mt-6 w-full"><Link href={`/caregiver/schedule?person_id=${person.id}`}>Schedule a visit</Link></Button>
         </Surface>
       </div>
+      <Surface>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-semibold text-[#728a76]">Caregiver-entered</p><h2 className="mt-1 font-serif text-2xl font-semibold">Medicines</h2><p className="mt-1 text-sm text-muted-foreground">Check every detail against the current prescription label.</p></div><Button asChild variant="outline"><Link href="/caregiver/medications"><Pill /> Manage medicines</Link></Button></div>
+        {medications.length === 0 ? <p className="mt-6 rounded-xl bg-muted p-5 text-sm text-muted-foreground">No current medicines are recorded for {person.name}.</p> : <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">{medications.map((medication) => <article key={medication.id} className="rounded-xl border bg-[#fffdf8] p-4"><div className="flex items-center gap-2"><Pill className="size-4 text-[#728a76]" /><h3 className="font-semibold">{medication.name}</h3></div><p className="mt-2 text-sm"><strong>{medication.dosage}</strong> · {medication.frequency}</p><p className="mt-3 flex items-start gap-2 text-xs leading-5 text-muted-foreground"><MapPin className="mt-0.5 size-3.5 shrink-0" />{medication.location}</p></article>)}</div>}
+      </Surface>
       {editing && <Modal title="Edit profile" description="Keep this portrait warm, familiar, and accurate." onClose={() => setEditing(false)}><PersonForm person={person} onSubmit={save} onCancel={() => setEditing(false)} /></Modal>}
     </div>
   );

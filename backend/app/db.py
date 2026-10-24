@@ -30,6 +30,19 @@ CREATE TABLE IF NOT EXISTS events (
     reminder_minutes INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('scheduled', 'completed', 'cancelled'))
 );
+CREATE TABLE IF NOT EXISTS medications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
+    name TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    dosage TEXT NOT NULL,
+    frequency TEXT NOT NULL,
+    location TEXT NOT NULL,
+    refill_date TEXT,
+    notes TEXT NOT NULL,
+    active INTEGER NOT NULL CHECK (active IN (0, 1)),
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS conversation_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
@@ -52,6 +65,8 @@ CREATE TABLE IF NOT EXISTS demo_seeds (
 );
 CREATE INDEX IF NOT EXISTS idx_memories_person ON memories(person_id);
 CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_time);
+CREATE INDEX IF NOT EXISTS idx_medications_person ON medications(person_id);
+CREATE INDEX IF NOT EXISTS idx_medications_refill ON medications(refill_date);
 CREATE INDEX IF NOT EXISTS idx_handoffs_status ON handoffs(status);
 """
 
@@ -90,7 +105,7 @@ def initialize_database(path: Path | str = DATABASE_PATH, *, seed: bool = True) 
 def seed_demo(connection: sqlite3.Connection) -> bool:
     seed_key = "margaret-fictional-v1"
     if connection.execute("SELECT 1 FROM demo_seeds WHERE key = ?", (seed_key,)).fetchone():
-        return False
+        return _seed_demo_medications(connection)
 
     people: dict[str, int] = {}
     for name, relationship, description in (
@@ -227,6 +242,78 @@ def seed_demo(connection: sqlite3.Connection) -> bool:
         [
             (title, description, utc_text(start_time), person_id, reminder_minutes)
             for title, description, start_time, person_id, reminder_minutes in events
+        ],
+    )
+    connection.execute(
+        "INSERT INTO demo_seeds(key, created_at) VALUES (?, ?)",
+        (seed_key, created_at),
+    )
+    _seed_demo_medications(connection, people["Margaret"])
+    return True
+
+
+def _seed_demo_medications(connection: sqlite3.Connection, margaret_id: int | None = None) -> bool:
+    seed_key = "margaret-fictional-medications-v1"
+    if connection.execute("SELECT 1 FROM demo_seeds WHERE key = ?", (seed_key,)).fetchone():
+        return False
+    if margaret_id is None:
+        row = connection.execute(
+            """SELECT id FROM people
+            WHERE name = 'Margaret' AND description LIKE 'Fictional demo —%' ORDER BY id LIMIT 1"""
+        ).fetchone()
+        if row is None:
+            return False
+        margaret_id = int(row["id"])
+
+    today = datetime.now(UTC).date()
+    created_at = utc_text()
+    medications = (
+        (
+            "Lisinopril",
+            "Fictional demo — blood pressure medicine.",
+            "10 mg",
+            "Once each morning with breakfast",
+            "Top shelf of the kitchen medicine cabinet, in the labeled morning organizer",
+            (today + timedelta(days=12)).isoformat(),
+            "Fictional demo only. Confirm all medicine details against the prescription label.",
+        ),
+        (
+            "Vitamin D3",
+            "Fictional demo — daily vitamin supplement.",
+            "1,000 IU",
+            "Once each morning",
+            "Top shelf of the kitchen medicine cabinet, beside the morning organizer",
+            (today + timedelta(days=28)).isoformat(),
+            "Fictional demo only. Caregiver recorded this from the current bottle label.",
+        ),
+        (
+            "Atorvastatin",
+            "Fictional demo — cholesterol medicine.",
+            "20 mg",
+            "Once each evening after dinner",
+            "Second shelf of the kitchen medicine cabinet, in the labeled evening organizer",
+            (today + timedelta(days=8)).isoformat(),
+            "Fictional demo only. Refill is coming up soon.",
+        ),
+    )
+    connection.executemany(
+        """INSERT INTO medications(
+            person_id, name, purpose, dosage, frequency, location,
+            refill_date, notes, active, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+        [
+            (
+                margaret_id,
+                name,
+                purpose,
+                dosage,
+                frequency,
+                location,
+                refill_date,
+                notes,
+                created_at,
+            )
+            for name, purpose, dosage, frequency, location, refill_date, notes in medications
         ],
     )
     connection.execute(

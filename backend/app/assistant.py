@@ -28,23 +28,34 @@ MEDICATION_WORDS = {
     "pill",
     "pills",
     "prescription",
+    "refill",
 }
 MEDICATION_CHANGE_WORDS = {
     "change",
     "double",
     "extra",
+    "interaction",
+    "interactions",
     "more",
     "less",
+    "missed",
+    "overdose",
+    "reaction",
+    "reactions",
     "skip",
     "stop",
+    "stopped",
     "twice",
 }
 MEDICATION_CHANGE_PHRASES = {
     "can i take",
     "how much",
+    "side effect",
     "should i take",
     "take another",
     "take extra",
+    "take it now",
+    "take this now",
 }
 SYMPTOM_WORDS = {
     "dizzy",
@@ -178,12 +189,13 @@ def answer_message(
     *,
     people: list[dict[str, Any]],
     memories: list[dict[str, Any]],
+    medications: list[dict[str, Any]],
     events: list[dict[str, Any]],
     handoffs: list[dict[str, Any]],
     history: list[dict[str, Any]],
 ) -> AssistantResult:
     """Route safety first, personal facts to stored records, and ordinary chat to OpenAI."""
-    rule_result = _safety_rule_answer(message, people=people, memories=memories)
+    rule_result = _safety_rule_answer(message)
     if rule_result is not None:
         return rule_result
 
@@ -191,7 +203,9 @@ def answer_message(
     if live_result is not None:
         return live_result
 
-    personal_query = _is_personal_query(message, people=people, history=history)
+    personal_query = _is_personal_query(
+        message, people=people, medications=medications, history=history
+    )
     if not personal_query:
         result = _openai_general_answer(message, history) if OPENAI_API_KEY else None
         return result or _general_fallback(message)
@@ -200,21 +214,26 @@ def answer_message(
         message,
         people=people,
         memories=memories,
+        medications=medications,
         events=events,
         handoffs=handoffs,
         history=history,
     )
     if safe_result.grounded:
-        natural = _openai_grounded_answer(message, safe_result, history) if OPENAI_API_KEY else None
+        medication_query = bool(set(_normalize(message).split()) & MEDICATION_WORDS) or (
+            _medication_mentioned(_normalize(message), medications) is not None
+        )
+        natural = (
+            _openai_grounded_answer(message, safe_result, history)
+            if OPENAI_API_KEY and not medication_query
+            else None
+        )
         return natural or safe_result
     return safe_result if safe_result.handoff_offered else _unknown_personal(message, people)
 
 
 def _safety_rule_answer(
     message: str,
-    *,
-    people: list[dict[str, Any]],
-    memories: list[dict[str, Any]],
 ) -> AssistantResult | None:
     normalized = _normalize(message)
     words = set(normalized.split())
@@ -228,42 +247,6 @@ def _safety_rule_answer(
             [],
             False,
         )
-
-    if words & MEDICATION_WORDS:
-        medication_memories = [
-            memory
-            for memory in memories
-            if _normalize(memory["category"])
-            in {"medication", "medications", "medicine", "prescription"}
-        ]
-        if words & MEDICATION_CHANGE_WORDS or any(
-            phrase in normalized for phrase in MEDICATION_CHANGE_PHRASES
-        ):
-            return AssistantResult(
-                (
-                    "I can't safely tell you to change, skip, or repeat medication. "
-                    "Please check the label and contact your caregiver, pharmacist, or clinician."
-                ),
-                False,
-                [],
-                False,
-            )
-        if medication_memories:
-            memory = max(
-                medication_memories,
-                key=lambda item: (item["created_at"], item["id"]),
-            )
-            return AssistantResult(
-                (
-                    f"A caregiver note says: {memory['content']} "
-                    "Please follow the medication label and check with a caregiver, pharmacist, "
-                    "or clinician before making any change."
-                ),
-                True,
-                [{"type": "memory", "id": memory["id"]}],
-                False,
-            )
-        return _unknown_personal(message, people)
 
     if words & SYMPTOM_WORDS:
         return AssistantResult(
@@ -298,11 +281,14 @@ def _is_personal_query(
     message: str,
     *,
     people: list[dict[str, Any]],
+    medications: list[dict[str, Any]],
     history: list[dict[str, Any]],
 ) -> bool:
     normalized = _normalize(message)
     words = set(normalized.split())
     if _resolve_person(message, people, history) is not None:
+        return True
+    if words & MEDICATION_WORDS or _medication_mentioned(normalized, medications) is not None:
         return True
     if words & {"my", "our"} and words & PERSONAL_FACT_WORDS:
         return True
@@ -369,6 +355,7 @@ def _grounded_answer(
     *,
     people: list[dict[str, Any]],
     memories: list[dict[str, Any]],
+    medications: list[dict[str, Any]],
     events: list[dict[str, Any]],
     handoffs: list[dict[str, Any]],
     history: list[dict[str, Any]],
@@ -408,13 +395,25 @@ def _grounded_answer(
         )
 
     person = _resolve_person(message, people, history)
+    named_medication = _medication_mentioned(normalized, medications)
     event_intent = bool(words & EVENT_WORDS)
     personal_memory_intent = bool(
         words & (MEMORY_WORDS | PREFERENCE_WORDS | ROUTINE_WORDS | LOCATION_WORDS)
     )
+    medication_intent = bool(words & MEDICATION_WORDS) or named_medication is not None
 
     if words & FOLLOW_UP_WORDS and person is None:
         return _unknown_personal(message, people)
+
+    if medication_intent:
+        return _medication_answer(
+            message,
+            medications=medications,
+            memories=memories,
+            people=people,
+            person=person,
+            named_medication=named_medication,
+        )
 
     if event_intent:
         upcoming = _upcoming_events(events, person_id=person["id"] if person else None)
@@ -581,6 +580,142 @@ def _upcoming_events(
     return sorted(upcoming, key=lambda event: (event["start_time"], event["id"]))
 
 
+def _medication_mentioned(
+    normalized_message: str, medications: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    padded = f" {normalized_message} "
+    return next(
+        (
+            medication
+            for medication in medications
+            if f" {_normalize(medication['name'])} " in padded
+        ),
+        None,
+    )
+
+
+def _medication_answer(
+    message: str,
+    *,
+    medications: list[dict[str, Any]],
+    memories: list[dict[str, Any]],
+    people: list[dict[str, Any]],
+    person: dict[str, Any] | None,
+    named_medication: dict[str, Any] | None,
+) -> AssistantResult:
+    normalized = _normalize(message)
+    words = set(normalized.split())
+    candidates = [
+        medication
+        for medication in medications
+        if medication["active"] and (person is None or medication["person_id"] == person["id"])
+    ]
+    selected = named_medication or (candidates[0] if len(candidates) == 1 else None)
+    safety_question = bool(words & MEDICATION_CHANGE_WORDS) or any(
+        phrase in normalized for phrase in MEDICATION_CHANGE_PHRASES
+    )
+
+    if safety_question:
+        if selected:
+            sources = _medication_sources(selected, people)
+            return AssistantResult(
+                f"Your caregiver record says {selected['name']} is {selected['dosage']}, "
+                f"{selected['frequency'].lower()}. I can't safely tell whether to change, skip, "
+                "or make up a dose. Please check the prescription label and ask your caregiver, "
+                "pharmacist, or clinician.",
+                True,
+                sources,
+                True,
+            )
+        return AssistantResult(
+            "I can't safely tell you whether to change, skip, or make up a medicine dose. "
+            "Please check the prescription label and ask your caregiver, pharmacist, or clinician.",
+            False,
+            [],
+            True,
+        )
+
+    if selected:
+        sources = _medication_sources(selected, people)
+        if words & {"where", "kept", "located", "find"}:
+            content = (
+                f"Your caregiver record says {selected['name']} is kept {selected['location']}."
+            )
+        elif words & {"refill", "refills"}:
+            refill = selected["refill_date"]
+            content = (
+                f"Your caregiver record says {selected['name']} needs a refill by {refill}."
+                if refill
+                else f"There is no refill date recorded for {selected['name']}."
+            )
+        elif words & {"why", "purpose"} or "what is" in normalized and " for" in normalized:
+            content = f"Your caregiver record says {selected['name']} is for: {selected['purpose']}"
+        else:
+            content = (
+                f"Your caregiver record says {selected['name']} is {selected['dosage']}, "
+                f"{selected['frequency'].lower()}, and is kept {selected['location']}."
+            )
+        return AssistantResult(content, True, sources, False)
+
+    if candidates:
+        if words & {"where", "kept", "located", "find"}:
+            details = "; ".join(f"{item['name']} is kept {item['location']}" for item in candidates)
+        elif words & {"refill", "refills"}:
+            details = "; ".join(
+                f"{item['name']}: {item['refill_date'] or 'no refill date recorded'}"
+                for item in candidates
+            )
+        else:
+            details = "; ".join(
+                f"{item['name']}, {item['dosage']}, {item['frequency'].lower()}"
+                for item in candidates
+            )
+        sources = []
+        for item in candidates:
+            sources.extend(_medication_sources(item, people))
+        unique_sources = list(
+            {(source["type"], source["id"]): source for source in sources}.values()
+        )
+        return AssistantResult(
+            f"Your caregiver record lists: {details}.",
+            True,
+            unique_sources,
+            False,
+        )
+    medication_memories = [
+        memory
+        for memory in memories
+        if _normalize(memory["category"])
+        in {"medication", "medications", "medicine", "prescription"}
+    ]
+    if medication_memories:
+        memory = max(
+            medication_memories,
+            key=lambda item: (item["created_at"], item["id"]),
+        )
+        return AssistantResult(
+            (
+                f"A caregiver note says: {memory['content']} "
+                "Please follow the medication label and check with a caregiver, pharmacist, "
+                "or clinician before making any change."
+            ),
+            True,
+            [{"type": "memory", "id": memory["id"]}],
+            False,
+        )
+    return _unknown_personal(message, people)
+
+
+def _medication_sources(
+    medication: dict[str, Any], people: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    sources = [{"type": "medication", "id": medication["id"]}]
+    person = _person_by_id(people, medication["person_id"])
+    if person:
+        sources.append({"type": "person", "id": person["id"]})
+    return sources
+
+
 def _person_by_id(people: list[dict[str, Any]], person_id: int | None) -> dict[str, Any] | None:
     return next((person for person in people if person["id"] == person_id), None)
 
@@ -635,7 +770,9 @@ def _openai_grounded_answer(
     verified: AssistantResult,
     history: list[dict[str, Any]],
 ) -> AssistantResult | None:
-    if any(source["type"] == "handoff" for source in verified.sources):
+    if verified.handoff_offered or any(
+        source["type"] == "handoff" for source in verified.sources
+    ):
         return None
     system = (
         "You are Anchor, a warm conversational companion for an older adult. Rewrite the supplied "

@@ -21,6 +21,7 @@ export function demoContext(now: Date): ConversationContext {
         created_at: "2026-09-01T10:00:00Z",
       },
     ],
+    medications: [],
     upcoming_events: [
       {
         id: -1,
