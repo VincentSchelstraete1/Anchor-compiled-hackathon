@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import type { Event, Memory, Person, PersonCreate } from "@/lib/api/types";
+import { resolvePhotoUrl } from "@/lib/api/photos";
 import { caregiverApi } from "./api";
 import { PersonForm } from "./person-form";
 import { EmptyState, ErrorState, formatDateTime, LoadingState, Modal, Notice, Surface } from "./ui";
@@ -66,7 +67,7 @@ export function PersonProfile() {
       <section className="overflow-hidden rounded-[1.75rem] border bg-card shadow-sm">
         <div className="grid md:grid-cols-[minmax(17rem,0.8fr)_1.2fr]">
           <div className="relative min-h-72 bg-[#dfe6d9] md:min-h-[28rem]">
-            {person.photo_url ? <Image src={person.photo_url} alt={`Portrait of ${person.name}`} fill sizes="(min-width: 768px) 40vw, 100vw" className="object-cover" unoptimized priority /> : <div className="grid h-full min-h-72 place-items-center text-[#728a76]"><UserRound className="size-24" /></div>}
+            {person.photo_url ? <Image src={resolvePhotoUrl(person.photo_url)} alt={`Portrait of ${person.name}`} fill sizes="(min-width: 768px) 40vw, 100vw" className="object-cover" unoptimized priority /> : <div className="grid h-full min-h-72 place-items-center text-[#728a76]"><UserRound className="size-24" /></div>}
           </div>
           <div className="flex flex-col justify-center p-7 sm:p-10 lg:p-14">
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[#b9684f]">{person.relationship}</p>

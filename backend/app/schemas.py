@@ -67,6 +67,10 @@ class Person(PersonFields):
     id: int
 
 
+class PhotoUpload(StrictModel):
+    photo_url: str
+
+
 class MemoryFields(StrictModel):
     person_id: int | None = Field(default=None, gt=0)
     title: Text = Field(min_length=1, max_length=120)

@@ -47,6 +47,14 @@ type PersonCreate = Omit<Person, "id">;
 type PersonUpdate = Partial<PersonCreate>;
 ```
 
+### Person photo upload
+
+- `POST /uploads/person-photo` accepts `multipart/form-data` with one `file` field → `201 { "photo_url": string }`.
+- Supported content types are `image/jpeg`, `image/png`, and `image/webp`; the server verifies the file signature.
+- Photos must be 5 MB or smaller. Unsupported or invalid images return `422`; oversized images return `413`.
+- The returned root-relative `/uploads/person-photos/...` reference is persistent and may be saved in a person's `photo_url` using the existing create or update endpoints.
+- Uploaded files are served by the API at the returned path. Existing absolute URLs and frontend asset paths remain supported.
+
 ## Personal memories
 
 ```ts

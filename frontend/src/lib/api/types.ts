@@ -9,6 +9,7 @@ export interface Person {
 }
 export type PersonCreate = Omit<Person, "id">;
 export type PersonUpdate = Partial<PersonCreate>;
+export interface PhotoUpload { photo_url: string; }
 
 export interface Memory {
   id: number;

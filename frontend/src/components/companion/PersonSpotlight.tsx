@@ -1,6 +1,7 @@
 "use client";
 
 import type { Person } from "@/lib/api/types";
+import { resolvePhotoUrl } from "@/lib/api/photos";
 import { SERIF } from "./AmbientDisplay";
 import { Fade } from "./Fade";
 
@@ -22,7 +23,7 @@ export function PersonSpotlight({ person }: { person: Person | null }) {
         {person.photo_url ? (
           // Photos come from arbitrary caregiver-supplied URLs, so next/image optimization does not apply.
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={person.photo_url} alt={`${person.name}, your ${person.relationship.toLowerCase()}`} className="absolute inset-0 size-full object-cover" />
+          <img src={resolvePhotoUrl(person.photo_url)} alt={`${person.name}, your ${person.relationship.toLowerCase()}`} className="absolute inset-0 size-full object-cover" />
         ) : (
           <div aria-hidden="true" className={`${SERIF} absolute inset-0 flex items-center justify-center text-[10rem] text-[var(--a-sage)] opacity-60`}>
             {initials(person.name)}

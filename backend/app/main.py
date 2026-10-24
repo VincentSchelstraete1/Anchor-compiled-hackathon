@@ -5,15 +5,17 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.assistant import answer_message
-from app.config import DATABASE_PATH, FRONTEND_ORIGINS
+from app.config import DATABASE_PATH, FRONTEND_ORIGINS, UPLOADS_PATH
 from app.db import get_connection, initialize_database, utc_text
 from app.schemas import (
     ChatRequest,
@@ -34,7 +36,15 @@ from app.schemas import (
     Person,
     PersonCreate,
     PersonUpdate,
+    PhotoUpload,
 )
+
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
+PHOTO_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
 
 
 class HealthResponse(BaseModel):
@@ -69,7 +79,25 @@ def _normalized_question(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
 
 
-def create_app(database_path: Path | str = DATABASE_PATH, *, seed: bool = True) -> FastAPI:
+def _photo_content_type(content: bytes) -> str | None:
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def create_app(
+    database_path: Path | str = DATABASE_PATH,
+    *,
+    seed: bool = True,
+    uploads_path: Path | str = UPLOADS_PATH,
+) -> FastAPI:
+    upload_root = Path(uploads_path)
+    photo_root = upload_root / "person-photos"
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         initialize_database(database_path, seed=seed)
@@ -118,6 +146,35 @@ def create_app(database_path: Path | str = DATABASE_PATH, *, seed: bool = True) 
     def list_people(db: sqlite3.Connection = Depends(database)) -> dict[str, list[Person]]:
         rows = db.execute("SELECT * FROM people ORDER BY name, id").fetchall()
         return {"items": [Person(**_row(row)) for row in rows]}
+
+    @application.post("/uploads/person-photo", response_model=PhotoUpload, status_code=201)
+    async def upload_person_photo(file: UploadFile = File(...)) -> PhotoUpload:
+        declared_type = (file.content_type or "").lower()
+        if declared_type not in PHOTO_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=_error("invalid_file_type", "Choose a JPEG, PNG, or WebP photo."),
+            )
+        content = await file.read(MAX_PHOTO_BYTES + 1)
+        await file.close()
+        if len(content) > MAX_PHOTO_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=_error("file_too_large", "Photo must be 5 MB or smaller."),
+            )
+        detected_type = _photo_content_type(content)
+        if detected_type is None or detected_type != declared_type:
+            raise HTTPException(
+                status_code=422,
+                detail=_error(
+                    "invalid_file_type",
+                    "This file does not appear to be a valid JPEG, PNG, or WebP photo.",
+                ),
+            )
+        photo_root.mkdir(parents=True, exist_ok=True)
+        filename = f"{uuid4().hex}.{PHOTO_TYPES[detected_type]}"
+        (photo_root / filename).write_bytes(content)
+        return PhotoUpload(photo_url=f"/uploads/person-photos/{filename}")
 
     @application.post("/people", response_model=Person, status_code=201)
     def create_person(payload: PersonCreate, db: sqlite3.Connection = Depends(database)) -> Person:
@@ -525,6 +582,9 @@ def create_app(database_path: Path | str = DATABASE_PATH, *, seed: bool = True) 
     def cancel_handoff(handoff_id: int, db: sqlite3.Connection = Depends(database)) -> Handoff:
         return transition(handoff_id, "pending", "cancelled", db)
 
+    application.mount(
+        "/uploads", StaticFiles(directory=upload_root, check_dir=False), name="uploads"
+    )
     return application
 
 

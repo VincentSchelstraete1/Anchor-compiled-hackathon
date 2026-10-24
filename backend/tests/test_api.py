@@ -9,7 +9,7 @@ from app.main import create_app
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
-    app = create_app(tmp_path / "test.db", seed=False)
+    app = create_app(tmp_path / "test.db", seed=False, uploads_path=tmp_path / "uploads")
     with TestClient(app) as test_client:
         yield test_client
 
@@ -26,6 +26,84 @@ def create_person(client: TestClient, name: str = "Elena") -> dict:
     )
     assert response.status_code == 201
     return response.json()
+
+
+@pytest.mark.parametrize(
+    ("content_type", "content", "extension"),
+    [
+        ("image/jpeg", b"\xff\xd8\xff\xe0photo", ".jpg"),
+        ("image/png", b"\x89PNG\r\n\x1a\nphoto", ".png"),
+        ("image/webp", b"RIFF\x04\x00\x00\x00WEBPphoto", ".webp"),
+    ],
+)
+def test_photo_upload_validation_and_serving(
+    client: TestClient, content_type: str, content: bytes, extension: str
+) -> None:
+    response = client.post(
+        "/uploads/person-photo",
+        files={"file": (f"portrait{extension}", content, content_type)},
+    )
+
+    assert response.status_code == 201
+    photo_url = response.json()["photo_url"]
+    assert photo_url.startswith("/uploads/person-photos/")
+    assert photo_url.endswith(extension)
+    served = client.get(photo_url)
+    assert served.status_code == 200
+    assert served.content == content
+    assert served.headers["content-type"] == content_type
+
+
+def test_photo_upload_rejects_invalid_type_content_and_size(client: TestClient) -> None:
+    unsupported = client.post(
+        "/uploads/person-photo",
+        files={"file": ("portrait.gif", b"GIF89a", "image/gif")},
+    )
+    assert unsupported.status_code == 422
+    assert unsupported.json()["error"]["code"] == "invalid_file_type"
+
+    disguised = client.post(
+        "/uploads/person-photo",
+        files={"file": ("portrait.png", b"not a png", "image/png")},
+    )
+    assert disguised.status_code == 422
+    assert disguised.json()["error"]["code"] == "invalid_file_type"
+
+    oversized = client.post(
+        "/uploads/person-photo",
+        files={"file": ("portrait.jpg", b"\xff\xd8\xff" + b"x" * (5 * 1024 * 1024), "image/jpeg")},
+    )
+    assert oversized.status_code == 413
+    assert oversized.json()["error"]["code"] == "file_too_large"
+
+
+def test_uploaded_photo_reference_persists_across_restart(tmp_path: Path) -> None:
+    database_path = tmp_path / "test.db"
+    uploads_path = tmp_path / "uploads"
+    app = create_app(database_path, seed=False, uploads_path=uploads_path)
+    with TestClient(app) as first_client:
+        upload = first_client.post(
+            "/uploads/person-photo",
+            files={"file": ("portrait.png", b"\x89PNG\r\n\x1a\nphoto", "image/png")},
+        )
+        photo_url = upload.json()["photo_url"]
+        person = first_client.post(
+            "/people",
+            json={
+                "name": "Elena",
+                "relationship": "daughter",
+                "description": "Primary caregiver",
+                "photo_url": photo_url,
+            },
+        ).json()
+
+    restarted = create_app(database_path, seed=False, uploads_path=uploads_path)
+    with TestClient(restarted) as second_client:
+        assert second_client.get(f"/people/{person['id']}").json()["photo_url"] == photo_url
+        assert second_client.get(photo_url).content == b"\x89PNG\r\n\x1a\nphoto"
+        removed = second_client.patch(f"/people/{person['id']}", json={"photo_url": None})
+        assert removed.status_code == 200
+        assert removed.json()["photo_url"] is None
 
 
 def test_people_crud_validation_not_found_and_reference_conflict(client: TestClient) -> None:

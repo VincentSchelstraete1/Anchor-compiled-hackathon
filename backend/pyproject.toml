@@ -5,6 +5,7 @@ description = "FastAPI backend for Anchor"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.118,<1.0",
+  "python-multipart>=0.0.20,<1.0",
   "uvicorn[standard]>=0.37,<1.0",
 ]
 

@@ -3,6 +3,7 @@ from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 DATABASE_PATH = Path(os.getenv("ANCHOR_DATABASE_PATH", BACKEND_DIR / "anchor.db"))
+UPLOADS_PATH = Path(os.getenv("ANCHOR_UPLOADS_PATH", BACKEND_DIR / "uploads"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("ANCHOR_OPENAI_MODEL", "gpt-4o-mini")
 
