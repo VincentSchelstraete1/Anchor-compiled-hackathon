@@ -1,71 +1,87 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { ConversationContext, Person } from "@/lib/api/types";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import type { Event, Handoff, Person } from "@/lib/api/types";
+import { AmbientClock } from "./AmbientClock";
+import { AmbientDisplay } from "./AmbientDisplay";
+import { CaregiverResponseListener } from "./CaregiverResponseListener";
+import { ConversationContextDisplay, type ConsentView } from "./ConversationContextDisplay";
+import { PersonSpotlight } from "./PersonSpotlight";
+import { ReminderManager } from "./ReminderManager";
+import { SpeechCaption, type Caption } from "./SpeechCaption";
+import { VoiceController } from "./VoiceController";
 import { createHandoff, getContext, sendChat } from "./companion-api";
 import { demoContext } from "./demo-data";
-import { AmbientClock } from "./AmbientClock";
-import { PersonSpotlight } from "./PersonSpotlight";
-import { ReminderAnnouncer } from "./ReminderAnnouncer";
-import { SpeechCaption, type Caption } from "./SpeechCaption";
-import { UpcomingCard } from "./UpcomingCard";
-import { VoiceController } from "./VoiceController";
-import type { Phase } from "./VoiceOrb";
-import { cancelSpeech, speak, synthesisSupported } from "./speech";
+import { gateTranscript, isEcho } from "./logic/activation";
+import {
+  ambientReducer,
+  deriveAmbientState,
+  initialAmbient,
+  sceneLinger,
+  type SceneData,
+} from "./logic/ambient-state";
+import { stepOffer, type HandoffOffer } from "./logic/consent";
+import { homeNarrative, pickHomeMemory, timeOfDay } from "./logic/home-context";
+import { isAcknowledgement, reminderSpeech } from "./logic/reminders";
+import { selectScene } from "./logic/scene-selector";
+import { cancelSpeech, speak, synthesisSupported, type SpeakResult } from "./speech";
+import { useNow } from "./useNow";
+import { useVoiceInput, type TranscriptSource } from "./useVoiceInput";
+import type { ConversationContext } from "@/lib/api/types";
 
-const CONTEXT_REFRESH_MS = 60000;
-const CAPTION_LINGER_MS = 60000;
-const AFFIRMATIVE = /^(yes|yeah|yep|yup|please|sure|ok|okay|go ahead|do that|that would be nice)\b/i;
+const CONTEXT_REFRESH_MS = 60_000;
+const CAPTION_LINGER_MS = 60_000;
+const ROTATE_MS = 45_000;
+const SESSION_MS = 45_000;
+const OFFER_MS = 90_000;
 const FAILURE_LINE = "I'm having trouble reaching my notes right now. Please try again in a moment.";
 
-interface HandoffOffer {
-  caregiver: Person;
-  question: string;
-}
-
-function isConsent(text: string): boolean {
-  return text.split(/\s+/).length <= 6 && AFFIRMATIVE.test(text.trim());
-}
-
-/** Picks the person Anchor offered to ask, using only the names in its own reply. */
-function findOfferedCaregiver(reply: string, people: Person[]): Person | null {
-  const lower = reply.toLowerCase();
-  return people.find((p) => lower.includes(p.name.toLowerCase())) ?? null;
-}
-
 export function CompanionScreen() {
+  const now = useNow();
   const [context, setContext] = useState<ConversationContext | null>(null);
   const [offline, setOffline] = useState(false);
-  const [phase, setPhaseState] = useState<Phase>("ready");
+  const [ambient, dispatch] = useReducer(ambientReducer, initialAmbient);
   const [caption, setCaption] = useState<Caption | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [voiceUnlocked, setVoiceUnlocked] = useState(false);
+  const [rotation, setRotation] = useState(0);
+  const [offer, setOfferState] = useState<HandoffOffer | null>(null);
+  const [sessionOpen, setSessionOpen] = useState(false);
 
-  const phaseRef = useRef<Phase>("ready");
+  const contextRef = useRef<ConversationContext | null>(null);
+  const ambientRef = useRef(ambient);
+  const offerRef = useRef<HandoffOffer | null>(null);
   const turn = useRef(0);
   const speechId = useRef(0);
-  const offer = useRef<HandoffOffer | null>(null);
-  const peopleRef = useRef<Person[]>([]);
+  const lastSpoken = useRef("");
+  const announcing = useRef(false);
+  const sessionUntil = useRef(0);
+  const sessionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unlockedRef = useRef(false);
+  useEffect(() => {
+    ambientRef.current = ambient;
+  });
 
-  const setPhase = useCallback((next: Phase) => {
-    phaseRef.current = next;
-    setPhaseState(next);
+  const setOffer = useCallback((next: HandoffOffer | null) => {
+    offerRef.current = next;
+    setOfferState(next);
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<ConversationContext | null> => {
     try {
       const next = await getContext();
+      contextRef.current = next;
       setContext(next);
-      peopleRef.current = next.people;
       setOffline(false);
+      return next;
     } catch {
-      setContext((current) => {
-        if (current) return current;
+      if (!contextRef.current) {
         const demo = demoContext(new Date());
-        peopleRef.current = demo.people;
-        return demo;
-      });
+        contextRef.current = demo;
+        setContext(demo);
+      }
       setOffline(true);
+      return null;
     }
   }, []);
 
@@ -80,7 +96,10 @@ export function CompanionScreen() {
 
   // Browsers only allow speech after a user gesture.
   useEffect(() => {
-    const unlock = () => setVoiceUnlocked(true);
+    const unlock = () => {
+      unlockedRef.current = true;
+      setVoiceUnlocked(true);
+    };
     window.addEventListener("pointerdown", unlock, { once: true });
     window.addEventListener("keydown", unlock, { once: true });
     return () => {
@@ -89,23 +108,78 @@ export function CompanionScreen() {
     };
   }, []);
 
-  // Captions fade away after a quiet minute so the frame stays calm.
   useEffect(() => {
-    if (phase !== "ready" || !caption) return;
+    const id = setInterval(() => setRotation((r) => r + 1), ROTATE_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  // Scenes return home a while after Anchor goes quiet; timers are tied to the scene's stamp.
+  useEffect(() => {
+    if (ambient.voice !== "idle" || ambient.scene.kind === "home") return;
+    const stamp = ambient.scene.stamp;
+    const id = setTimeout(() => dispatch({ type: "scene_timeout", stamp }), sceneLinger(ambient.scene.kind));
+    return () => clearTimeout(id);
+  }, [ambient.voice, ambient.scene.kind, ambient.scene.stamp]);
+
+  useEffect(() => {
+    if (!offer) return;
+    const id = setTimeout(() => setOffer(null), Math.max(0, offer.expiresAt - Date.now()));
+    return () => clearTimeout(id);
+  }, [offer, setOffer]);
+
+  useEffect(() => {
+    if (ambient.voice !== "idle" || !caption) return;
     const id = setTimeout(() => setCaption(null), CAPTION_LINGER_MS);
     return () => clearTimeout(id);
-  }, [phase, caption]);
+  }, [ambient.voice, caption]);
 
-  const say = useCallback(
-    async (text: string): Promise<boolean> => {
-      const id = ++speechId.current;
-      setCaption({ speaker: "anchor", text });
-      setPhase("speaking");
-      const finished = await speak(text);
-      if (id === speechId.current && phaseRef.current === "speaking") setPhase("ready");
-      return finished;
+  const touchSession = useCallback(() => {
+    sessionUntil.current = Date.now() + SESSION_MS;
+    setSessionOpen(true);
+    if (sessionTimer.current) clearTimeout(sessionTimer.current);
+    sessionTimer.current = setTimeout(() => setSessionOpen(false), SESSION_MS);
+  }, []);
+  useEffect(
+    () => () => {
+      if (sessionTimer.current) clearTimeout(sessionTimer.current);
     },
-    [setPhase],
+    [],
+  );
+
+  const say = useCallback(async (text: string, scene?: SceneData): Promise<SpeakResult> => {
+    const id = ++speechId.current;
+    lastSpoken.current = text;
+    setCaption({ speaker: "anchor", text });
+    if (scene) dispatch({ type: "show", scene });
+    dispatch({ type: "speak_start" });
+    const result = await speak(text);
+    if (id === speechId.current) dispatch({ type: "speak_end" });
+    return result;
+  }, []);
+
+  const interrupt = useCallback(() => {
+    turn.current++;
+    speechId.current++;
+    cancelSpeech();
+    dispatch({ type: "interrupt" });
+  }, []);
+
+  const sendHandoff = useCallback(
+    async (caregiverId: number, question: string, id: number) => {
+      const caregiver = contextRef.current?.people.find((p) => p.id === caregiverId) ?? null;
+      try {
+        await createHandoff(caregiverId, question);
+        if (id !== turn.current) return;
+        setOffer(null);
+        void refresh();
+        await say(`Okay, I'll send ${caregiver?.name ?? "them"} your question.`, { kind: "waiting", caregiver, question });
+      } catch {
+        if (id !== turn.current) return;
+        setOffer({ question, caregiverId, awaitingWho: false, expiresAt: Date.now() + OFFER_MS });
+        await say("I couldn't send that just now. Would you like me to try again?");
+      }
+    },
+    [refresh, say, setOffer],
   );
 
   const handleUtterance = useCallback(
@@ -113,63 +187,226 @@ export function CompanionScreen() {
       const id = ++turn.current;
       speechId.current++;
       cancelSpeech();
+      setNotice(null);
       setCaption({ speaker: "you", text });
-      setPhase("thinking");
+      dispatch({ type: "processing" });
       try {
-        const pending = offer.current;
-        offer.current = null;
-        if (pending && isConsent(text)) {
-          // Explicit spoken consent in this turn; the backend still requires consent_confirmed: true.
-          await createHandoff(pending.caregiver.id, pending.question);
-          if (id !== turn.current) return;
-          void refresh();
-          await say(`Okay, I've asked ${pending.caregiver.name}. I'll tell you as soon as there's a reply.`);
+        const scene = ambientRef.current.scene;
+        if (scene.kind === "reminder" && isAcknowledgement(text)) {
+          dispatch({ type: "scene_timeout", stamp: scene.stamp });
+          await say("Okay.");
           return;
         }
+
+        const pending = offerRef.current;
+        if (pending) {
+          const people = contextRef.current?.people ?? [];
+          const step = stepOffer(pending, text, people, Date.now());
+          if (step.kind === "create") return await sendHandoff(step.caregiverId, step.question, id);
+          if (step.kind === "decline") {
+            setOffer(null);
+            await say("Okay, I won't ask.", { kind: "home" });
+            return;
+          }
+          if (step.kind === "ask_who") {
+            setOffer({ ...pending, awaitingWho: true, expiresAt: Date.now() + OFFER_MS });
+            await say("Who would you like me to ask?");
+            return;
+          }
+          setOffer(null); // anything else withdraws the offer: consent never carries over to a new topic
+        }
+
         const response = await sendChat(text);
         if (id !== turn.current) return;
-        if (response.handoff_offered) {
-          const caregiver = findOfferedCaregiver(response.message.content, peopleRef.current);
-          if (caregiver) offer.current = { caregiver, question: text };
+        let ctx = contextRef.current ?? demoContext(new Date());
+        let selection = selectScene(response, ctx, text, new Date());
+        if (selection.missing) {
+          const fresh = await refresh();
+          if (fresh) {
+            ctx = fresh;
+            selection = selectScene(response, ctx, text, new Date());
+          }
         }
-        await say(response.message.content);
+        if (id !== turn.current) return;
+        if (response.handoff_offered) {
+          const named = response.handoff_caregiver_person_id;
+          const caregiverId = typeof named === "number" && ctx.people.some((p) => p.id === named) ? named : null;
+          setOffer({ question: text, caregiverId, awaitingWho: false, expiresAt: Date.now() + OFFER_MS });
+        }
+        await say(response.message.content, selection.scene);
       } catch {
-        if (id === turn.current) await say(FAILURE_LINE);
+        if (id === turn.current) {
+          setNotice("I couldn't reach my notes. You can try again or type your question.");
+          await say(FAILURE_LINE);
+        }
       }
     },
-    [refresh, say, setPhase],
+    [refresh, say, sendHandoff, setOffer],
+  );
+
+  const voice = useVoiceInput({
+    outputBusy: ambient.voice === "speaking" || ambient.voice === "processing",
+    onNotice: setNotice,
+    onInterim: (text) => setCaption({ speaker: "you", text }),
+    onListening: (listening) => {
+      if (listening) {
+        turn.current++;
+        speechId.current++;
+        cancelSpeech();
+        dispatch({ type: "listen_start" });
+      } else {
+        dispatch({ type: "listen_end" });
+      }
+    },
+    onTranscript: (raw: string, source: TranscriptSource) => {
+      if (source === "ptt") return void handleUtterance(raw);
+      if (isEcho(raw, lastSpoken.current)) return;
+      const gate = gateTranscript(raw, Date.now() < sessionUntil.current);
+      if (!gate.accepted) return;
+      touchSession();
+      if (!gate.text) return void say("I'm listening.");
+      void handleUtterance(gate.text);
+    },
+  });
+
+  // After Anchor finishes, keep an open conversation open so follow-ups need no wake word.
+  const previousVoice = useRef(ambient.voice);
+  useEffect(() => {
+    if (previousVoice.current !== "idle" && ambient.voice === "idle" && voice.handsFree && Date.now() < sessionUntil.current) touchSession();
+    previousVoice.current = ambient.voice;
+  }, [ambient.voice, voice.handsFree, touchSession]);
+
+  const isReady = useCallback(
+    () => ambientRef.current.voice === "idle" && Date.now() >= sessionUntil.current && !offerRef.current && !announcing.current,
+    [],
+  );
+
+  const presentReminder = useCallback(
+    async (event: Event, person: Person | null, speakIt: boolean) => {
+      announcing.current = true;
+      try {
+        const scene: SceneData = { kind: "reminder", person, event };
+        const text = reminderSpeech(event, person);
+        if (speakIt) await say(text, scene);
+        else {
+          setCaption({ speaker: "anchor", text });
+          dispatch({ type: "show", scene });
+        }
+      } finally {
+        announcing.current = false;
+      }
+    },
+    [say],
+  );
+
+  const announceReply = useCallback(
+    async (handoff: Handoff, caregiver: Person | null): Promise<boolean> => {
+      announcing.current = true;
+      try {
+        const text = `I have a reply from ${caregiver?.name ?? "your caregiver"}. ${handoff.response ?? ""}`;
+        return (await say(text, { kind: "reply", caregiver, handoff })) === "completed";
+      } finally {
+        announcing.current = false;
+      }
+    },
+    [say],
   );
 
   const people = context?.people ?? [];
-  const idle = phase === "ready";
+  const events = context?.upcoming_events ?? [];
+  const pending = context?.pending_handoffs.find((h) => h.status === "pending") ?? null;
+  const pendingCaregiver = pending ? people.find((p) => p.id === pending.caregiver_person_id) ?? null : null;
+  const stateName = deriveAmbientState(ambient, pending !== null);
+
+  const narrative = now ? homeNarrative(now, events) : { line: "", focusPersonId: null };
+  const homePerson = people.find((p) => p.id === narrative.focusPersonId) ?? (people.length ? people[rotation % people.length] : null);
+  const scene = ambient.scene;
+  const scenePerson =
+    scene.kind === "person" || scene.kind === "memory" || scene.kind === "event" || scene.kind === "reminder"
+      ? scene.person
+      : scene.kind === "uncertain"
+        ? scene.subject
+        : scene.kind === "waiting" || scene.kind === "reply"
+          ? scene.caregiver
+          : null;
+  const shownPerson = scenePerson ?? homePerson;
+  const homeMemory = context ? pickHomeMemory(context.memories, shownPerson, rotation) : null;
+
+  const consent: ConsentView | null = offer
+    ? { caregiver: people.find((p) => p.id === offer.caregiverId) ?? null, candidates: people, awaitingWho: offer.awaitingWho }
+    : null;
+
+  const busy = ambient.voice === "processing";
   const canSpeak = voiceUnlocked && synthesisSupported();
 
+  const confirmFromCard = (personId: number) => {
+    const current = offerRef.current;
+    if (!current) return;
+    const id = ++turn.current;
+    cancelSpeech();
+    dispatch({ type: "processing" });
+    void sendHandoff(personId, current.question, id);
+  };
+
   return (
-    <main className="grid min-h-dvh gap-8 p-6 lg:grid-cols-[1.15fr_1fr] lg:p-10">
-      <PersonSpotlight people={people} />
-      <div className="flex flex-col justify-between gap-8">
-        <AmbientClock />
-        <UpcomingCard events={context?.upcoming_events ?? []} people={people} />
+    <AmbientDisplay tod={now ? timeOfDay(now.getHours()) : "morning"} stateName={stateName}>
+      <PersonSpotlight person={shownPerson} />
+      <div className="flex min-w-0 flex-col justify-between gap-8">
+        <AmbientClock line={narrative.line} />
+        <ConversationContextDisplay
+          scene={scene}
+          people={people}
+          events={events}
+          homeMemory={homeMemory}
+          pendingCaregiver={pendingCaregiver}
+          consent={scene.kind === "uncertain" ? consent : null}
+          onAskCaregiver={confirmFromCard}
+          onDecline={() => {
+            setOffer(null);
+            void say("Okay, I won't ask.", { kind: "home" });
+          }}
+          onAcknowledge={() => dispatch({ type: "scene_timeout", stamp: scene.stamp })}
+        />
         <SpeechCaption caption={caption} notice={notice} />
         <VoiceController
-          phase={phase}
-          onListenStart={() => {
-            turn.current++;
-            speechId.current++;
-            cancelSpeech();
-            setPhase("listening");
+          stateName={stateName}
+          voice={ambient.voice}
+          waitingFor={pendingCaregiver?.name ?? null}
+          supported={voice.supported}
+          handsFree={voice.handsFree}
+          muted={voice.muted}
+          micStatus={voice.status}
+          sessionOpen={sessionOpen}
+          pttActive={voice.pttActive}
+          busy={busy}
+          onOrbPress={() => {
+            if (voice.pttActive) voice.pttStop();
+            else {
+              if (ambient.voice === "speaking") interrupt();
+              voice.pttStart(false);
+            }
           }}
-          onListenEnd={() => {
-            if (phaseRef.current === "listening") setPhase("ready");
+          onHoldStart={() => {
+            if (!busy) voice.pttStart(true);
           }}
-          onInterim={(text) => setCaption({ speaker: "you", text })}
-          onUtterance={(text) => void handleUtterance(text)}
-          onNotice={setNotice}
+          onHoldEnd={voice.pttStop}
+          onToggleHandsFree={() => {
+            const next = !voice.handsFree;
+            voice.setHandsFree(next);
+            if (next) {
+              setCaption({ speaker: "anchor", text: "Hands-free is on. Say “Anchor”, then ask me anything." });
+              touchSession();
+            }
+          }}
+          onToggleMute={() => voice.setMuted(!voice.muted)}
+          onInterrupt={interrupt}
+          onTyped={(text) => void handleUtterance(text)}
         />
-        {offline ? <p className="text-lg text-muted-foreground">Showing sample content while Anchor&apos;s notes are unavailable.</p> : null}
-        {!voiceUnlocked ? <p className="text-lg text-muted-foreground">Press any key or tap once to turn on spoken reminders.</p> : null}
+        {offline ? <p className="text-xl text-[var(--a-muted)]">Showing sample content while Anchor&apos;s notes are unavailable.</p> : null}
+        {!voiceUnlocked ? <p className="text-xl text-[var(--a-muted)]">Press any key or tap once to turn on spoken reminders.</p> : null}
       </div>
-      <ReminderAnnouncer people={people} idle={idle} canSpeak={canSpeak} announce={say} onDelivered={() => void refresh()} />
-    </main>
+      <ReminderManager people={people} isReady={isReady} canSpeak={canSpeak} present={presentReminder} />
+      <CaregiverResponseListener people={people} isReady={isReady} canSpeak={canSpeak} announce={announceReply} onDelivered={() => void refresh()} />
+    </AmbientDisplay>
   );
 }

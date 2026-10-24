@@ -8,6 +8,12 @@ import type {
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+/**
+ * Proposed, not yet in docs/API.md: the backend names the caregiver it would ask, so the client never has to
+ * guess from generated text. Read defensively; absent means "unknown".
+ */
+export type CompanionChatResponse = ChatResponse & { handoff_caregiver_person_id?: number | null };
+
 async function request<T>(path: string, init?: RequestInit, timeoutMs = 15000): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -28,8 +34,8 @@ export function getContext(): Promise<ConversationContext> {
   return request<ConversationContext>("/conversation/context");
 }
 
-export function sendChat(message: string): Promise<ChatResponse> {
-  return request<ChatResponse>("/chat", { method: "POST", body: JSON.stringify({ message }) }, 45000);
+export function sendChat(message: string): Promise<CompanionChatResponse> {
+  return request<CompanionChatResponse>("/chat", { method: "POST", body: JSON.stringify({ message }) }, 45000);
 }
 
 export async function getDueReminders(at: Date): Promise<Event[]> {

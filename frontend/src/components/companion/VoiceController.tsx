@@ -1,24 +1,38 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { getRecognitionCtor, type Recognition } from "./speech";
-import { VoiceOrb, type Phase } from "./VoiceOrb";
+import { Mic, MicOff, Radio } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import type { AmbientStateName, Voice } from "./logic/ambient-state";
+import type { MicStatus } from "./useVoiceInput";
+import { VoiceOrb, type OrbPhase } from "./VoiceOrb";
 
 interface Props {
-  phase: Phase;
-  onListenStart: () => void;
-  onListenEnd: () => void;
-  onInterim: (text: string) => void;
-  onUtterance: (text: string) => void;
-  onNotice: (message: string | null) => void;
+  stateName: AmbientStateName;
+  voice: Voice;
+  waitingFor: string | null;
+  supported: boolean;
+  handsFree: boolean;
+  muted: boolean;
+  micStatus: MicStatus;
+  sessionOpen: boolean;
+  pttActive: boolean;
+  busy: boolean;
+  onOrbPress: () => void;
+  onHoldStart: () => void;
+  onHoldEnd: () => void;
+  onToggleHandsFree: () => void;
+  onToggleMute: () => void;
+  onInterrupt: () => void;
+  onTyped: (text: string) => void;
 }
 
-const ERROR_MESSAGES: Record<string, string> = {
-  "not-allowed": "The microphone is blocked. Allow microphone access in your browser settings, or type below.",
-  "service-not-allowed": "The microphone is blocked. Allow microphone access in your browser settings, or type below.",
-  "audio-capture": "No microphone was found. You can type below instead.",
-  network: "Voice input needs an internet connection right now. You can type below instead.",
-  "no-speech": "I didn't hear anything. Please try again.",
+const STATE_LABEL: Partial<Record<AmbientStateName, string>> = {
+  listening: "Listening",
+  processing: "Thinking",
+  speaking: "Speaking",
+  delivering_reminder: "Reminder",
+  awaiting_consent: "Waiting for your answer",
+  caregiver_reply: "A reply has arrived",
 };
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -26,108 +40,85 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
 }
 
-export function VoiceController({ phase, onListenStart, onListenEnd, onInterim, onUtterance, onNotice }: Props) {
+export function micStatusText(p: Pick<Props, "supported" | "handsFree" | "muted" | "micStatus" | "sessionOpen" | "pttActive">): string {
+  if (!p.supported) return "Voice isn't available in this browser. Typing works.";
+  if (p.pttActive) return "Microphone on while you hold Space";
+  if (!p.handsFree) return "Microphone off";
+  if (p.muted) return "Microphone muted";
+  switch (p.micStatus) {
+    case "listening": return p.sessionOpen ? "Microphone on. Go ahead, I'm listening" : "Microphone on. Say “Anchor” to talk";
+    case "paused": return "Microphone paused while Anchor speaks";
+    case "starting": return "Starting the microphone…";
+    case "error": return "Microphone unavailable";
+    default: return "Microphone off";
+  }
+}
+
+export function VoiceController(p: Props) {
   const [typed, setTyped] = useState("");
-  const [supported] = useState(() => getRecognitionCtor() !== null);
-  const recognition = useRef<Recognition | null>(null);
-  const holding = useRef(false);
-  const latest = useRef({ phase, onListenStart, onListenEnd, onInterim, onUtterance, onNotice });
-  useEffect(() => {
-    latest.current = { phase, onListenStart, onListenEnd, onInterim, onUtterance, onNotice };
-  });
 
-  const start = useCallback((hold: boolean) => {
-    if (recognition.current) return;
-    const Ctor = getRecognitionCtor();
-    if (!Ctor) {
-      latest.current.onNotice("Voice input isn't supported in this browser. Try Chrome or Edge, or type below.");
-      return;
-    }
-    const rec = new Ctor();
-    let transcript = "";
-    let failure: string | null = null;
-    rec.lang = navigator.language || "en-US";
-    rec.interimResults = true;
-    rec.continuous = hold;
-    rec.onresult = (event) => {
-      let text = "";
-      for (let i = 0; i < event.results.length; i++) text += event.results[i][0].transcript;
-      transcript = text;
-      latest.current.onInterim(text);
-    };
-    rec.onerror = (event) => {
-      failure = event.error;
-    };
-    rec.onend = () => {
-      recognition.current = null;
-      holding.current = false;
-      const text = transcript.trim();
-      if (failure && failure !== "aborted" && !text) {
-        latest.current.onNotice(ERROR_MESSAGES[failure] ?? "Voice input stopped unexpectedly. You can type below.");
-        latest.current.onListenEnd();
-      } else if (text) {
-        latest.current.onUtterance(text);
-      } else {
-        latest.current.onListenEnd();
-      }
-    };
-    latest.current.onNotice(null);
-    latest.current.onListenStart();
-    recognition.current = rec;
-    try {
-      rec.start();
-    } catch {
-      recognition.current = null;
-      latest.current.onNotice("I couldn't start listening. Please try again.");
-      latest.current.onListenEnd();
-    }
-  }, []);
-
-  const stop = useCallback(() => recognition.current?.stop(), []);
-
-  // Push-to-talk: hold Space to listen, release to send. Escape stops speech.
+  // Push-to-talk: hold Space. Escape stops Anchor speaking.
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (e.code !== "Space" || isTypingTarget(e.target)) return;
+      if (isTypingTarget(e.target)) return;
+      if (e.code === "Escape") return p.onInterrupt();
+      if (e.code !== "Space") return;
       e.preventDefault();
-      if (e.repeat || holding.current || latest.current.phase === "thinking") return;
-      holding.current = true;
-      start(true);
+      if (!e.repeat) p.onHoldStart();
     };
     const up = (e: KeyboardEvent) => {
       if (e.code !== "Space" || isTypingTarget(e.target)) return;
       e.preventDefault();
-      if (holding.current) stop();
+      p.onHoldEnd();
     };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     return () => {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
-      recognition.current?.abort();
     };
-  }, [start, stop]);
-
-  const press = () => {
-    if (recognition.current) stop();
-    else start(false);
-  };
+  });
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const text = typed.trim();
-    if (!text || phase === "thinking") return;
+    if (!text || p.busy) return;
     setTyped("");
-    latest.current.onNotice(null);
-    latest.current.onUtterance(text);
+    p.onTyped(text);
   };
+
+  const hfLive = p.handsFree && !p.muted && p.micStatus === "listening" && p.sessionOpen;
+  const orbPhase: OrbPhase = p.voice === "idle" ? (hfLive ? "listening" : "idle") : p.voice;
+  const label = p.waitingFor && p.stateName === "waiting_for_caregiver" ? `Waiting for ${p.waitingFor}` : STATE_LABEL[p.stateName] ?? "Ready";
+  const button = "inline-flex min-h-14 items-center gap-3 rounded-2xl px-5 text-xl font-semibold outline-offset-4 focus-visible:outline-4 focus-visible:outline-[var(--a-sage)]";
 
   return (
     <div className="space-y-5">
-      <VoiceOrb phase={phase} onPress={press} />
-      {!supported ? (
-        <p className="text-lg text-muted-foreground">Voice input isn&apos;t available in this browser, so please type below.</p>
-      ) : null}
+      <div className="flex items-center gap-6">
+        <VoiceOrb phase={orbPhase} unavailable={!p.supported} onPress={p.onOrbPress} />
+        <div className="min-w-0">
+          <p className="text-4xl font-semibold" data-testid="state-label">{label}</p>
+          <p className="mt-1 flex items-center gap-2 text-xl text-[var(--a-muted)]" data-testid="mic-status">
+            <span aria-hidden="true" className={`inline-block size-3 shrink-0 rounded-full ${p.handsFree && p.micStatus === "listening" && !p.muted ? "bg-[var(--a-terra)]" : "border-2 border-[var(--a-muted)]"}`} />
+            <span role="status">{micStatusText(p)}</span>
+          </p>
+          <p className="mt-1 text-xl text-[var(--a-muted)]">Hold Space to talk</p>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        {p.supported ? (
+          <button type="button" onClick={p.onToggleHandsFree} aria-pressed={p.handsFree} className={`${button} ${p.handsFree ? "bg-[var(--a-sage)] text-[var(--a-on-accent)]" : "border-2 border-[var(--a-sage)] text-[var(--a-sage)]"}`}>
+            <Radio aria-hidden="true" className="size-6" />
+            {p.handsFree ? "Hands-free is on" : "Start hands-free"}
+          </button>
+        ) : null}
+        {p.handsFree ? (
+          <button type="button" onClick={p.onToggleMute} aria-pressed={p.muted} className={`${button} border-2 border-[var(--a-border)]`}>
+            {p.muted ? <MicOff aria-hidden="true" className="size-6" /> : <Mic aria-hidden="true" className="size-6" />}
+            {p.muted ? "Unmute" : "Mute"}
+          </button>
+        ) : null}
+      </div>
       <form onSubmit={submit} className="flex gap-3">
         <label htmlFor="typed-message" className="sr-only">
           Type a message to Anchor
@@ -138,13 +129,9 @@ export function VoiceController({ phase, onListenStart, onListenEnd, onInterim, 
           onChange={(e) => setTyped(e.target.value)}
           autoComplete="off"
           placeholder="Or type here…"
-          className="min-w-0 flex-1 rounded-xl border bg-card px-4 py-3 text-xl focus-visible:outline-4 focus-visible:outline-ring"
+          className="min-w-0 flex-1 rounded-2xl border border-[var(--a-border)] bg-[var(--a-card)] px-5 py-3 text-xl text-[var(--a-fg)] placeholder:text-[var(--a-muted)] focus-visible:outline-4 focus-visible:outline-[var(--a-sage)]"
         />
-        <button
-          type="submit"
-          disabled={!typed.trim() || phase === "thinking"}
-          className="rounded-xl bg-secondary px-5 py-3 text-xl font-semibold text-secondary-foreground focus-visible:outline-4 focus-visible:outline-ring disabled:opacity-50"
-        >
+        <button type="submit" disabled={!typed.trim() || p.busy} className={`${button} bg-[var(--a-sage-soft)] text-[var(--a-fg)] disabled:opacity-50`}>
           Send
         </button>
       </form>
