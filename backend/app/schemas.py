@@ -1,11 +1,19 @@
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    model_validator,
+)
 
 
-def _trim(value: str) -> str:
-    return value.strip()
+def _trim(value: object) -> object:
+    return value.strip() if isinstance(value, str) else value
 
 
 def _aware(value: datetime) -> datetime:
@@ -14,7 +22,7 @@ def _aware(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-Text = Annotated[str, AfterValidator(_trim)]
+Text = Annotated[str, BeforeValidator(_trim)]
 Timestamp = Annotated[datetime, AfterValidator(_aware)]
 EventStatus = Literal["scheduled", "completed", "cancelled"]
 HandoffStatus = Literal["pending", "answered", "delivered", "cancelled"]
@@ -176,6 +184,10 @@ class HandoffAnswer(StrictModel):
 
 class ChatRequest(StrictModel):
     message: Text = Field(min_length=1, max_length=2000)
+
+
+class SpeechRequest(StrictModel):
+    text: Text = Field(min_length=1, max_length=4096)
 
 
 class Source(StrictModel):

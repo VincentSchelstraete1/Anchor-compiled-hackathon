@@ -34,7 +34,9 @@ from app.schemas import (
     Person,
     PersonCreate,
     PersonUpdate,
+    SpeechRequest,
 )
+from app.speech import SpeechUnavailableError, generate_speech
 
 
 class HealthResponse(BaseModel):
@@ -416,6 +418,27 @@ def create_app(database_path: Path | str = DATABASE_PATH, *, seed: bool = True) 
             grounded=result.grounded,
             sources=result.sources,
             handoff_offered=result.handoff_offered,
+        )
+
+    @application.post("/speech", response_class=Response)
+    def speech(payload: SpeechRequest) -> Response:
+        try:
+            audio = generate_speech(payload.text)
+        except SpeechUnavailableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=_error(
+                    "speech_unavailable",
+                    "OpenAI speech is temporarily unavailable; use browser speech fallback",
+                ),
+            ) from exc
+        return Response(
+            content=audio,
+            media_type="audio/mpeg",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Anchor-Voice-Disclosure": "AI-generated voice",
+            },
         )
 
     @application.get("/handoffs")
