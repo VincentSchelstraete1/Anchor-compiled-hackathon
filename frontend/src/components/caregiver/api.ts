@@ -2,6 +2,7 @@ import type {
   Event,
   EventCreate,
   EventUpdate,
+  DemoSeedResult,
   Handoff,
   HandoffAnswer,
   ListResponse,
@@ -40,6 +41,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const json = (value: unknown): RequestInit => ({ body: JSON.stringify(value) });
 
 export const caregiverApi = {
+  demo: {
+    seed: () => request<DemoSeedResult>("/demo/seed", { method: "POST" }),
+  },
   people: {
     list: () => request<ListResponse<Person>>("/people"),
     get: (id: number) => request<Person>(`/people/${id}`),

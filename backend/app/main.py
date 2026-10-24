@@ -16,12 +16,13 @@ from pydantic import BaseModel
 
 from app.assistant import answer_message
 from app.config import DATABASE_PATH, FRONTEND_ORIGINS, UPLOADS_PATH
-from app.db import get_connection, initialize_database, utc_text
+from app.db import get_connection, initialize_database, seed_demo, utc_text
 from app.schemas import (
     ChatRequest,
     ChatResponse,
     ConversationContext,
     ConversationMessage,
+    DemoSeedResult,
     Event,
     EventCreate,
     EventStatus,
@@ -141,6 +142,26 @@ def create_app(
     @application.get("/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:
         return HealthResponse(status="ok")
+
+    @application.post("/demo/seed", response_model=DemoSeedResult, tags=["demo"])
+    def seed_fictional_demo(db: sqlite3.Connection = Depends(database)) -> DemoSeedResult:
+        seeded = seed_demo(db)
+        db.commit()
+        people = db.execute(
+            "SELECT COUNT(*) FROM people WHERE description LIKE 'Fictional demo —%'"
+        ).fetchone()[0]
+        memories = db.execute(
+            "SELECT COUNT(*) FROM memories WHERE category LIKE 'Demo · %'"
+        ).fetchone()[0]
+        events = db.execute(
+            "SELECT COUNT(*) FROM events WHERE description LIKE 'Fictional demo —%'"
+        ).fetchone()[0]
+        return DemoSeedResult(
+            seeded=seeded,
+            people=people,
+            memories=memories,
+            events=events,
+        )
 
     @application.get("/people")
     def list_people(db: sqlite3.Connection = Depends(database)) -> dict[str, list[Person]]:
