@@ -134,6 +134,7 @@ def test_fictional_demo_seed_is_idempotent_persistent_and_available_to_companion
         context = demo_client.get("/conversation/context").json()
         assert len(context["people"]) == 4
         assert len(context["memories"]) == 10
+        assert len(context["medications"]) == 3
         assert len(context["upcoming_events"]) == 5
         margaret = next(person for person in context["people"] if person["name"] == "Margaret")
         assert margaret["description"].startswith("Fictional demo —")
@@ -234,6 +235,53 @@ def test_fictional_demo_questions_are_grounded(client: TestClient, question: str
     assert response.status_code == 200
     assert response.json()["grounded"] is True
     assert response.json()["sources"]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_text"),
+    [
+        ("What medicines do I take?", "Lisinopril"),
+        ("Where is my Lisinopril?", "kitchen medicine cabinet"),
+        ("How often do I take Lisinopril?", "once each morning"),
+        ("When does Lisinopril need a refill?", "refill by"),
+        ("What is Lisinopril for?", "blood pressure medicine"),
+    ],
+)
+def test_fictional_medication_questions_use_caregiver_records(
+    client: TestClient, question: str, expected_text: str
+) -> None:
+    assert client.post("/demo/seed").status_code == 200
+
+    response = client.post("/chat", json={"message": question}).json()
+
+    assert response["grounded"] is True
+    assert any(source["type"] == "medication" for source in response["sources"])
+    assert expected_text.lower() in response["message"]["content"].lower()
+
+
+def test_medication_edits_propagate_and_advice_stays_within_safe_boundary(
+    client: TestClient,
+) -> None:
+    client.post("/demo/seed")
+    medicines = client.get("/medications?active=true").json()["items"]
+    lisinopril = next(item for item in medicines if item["name"] == "Lisinopril")
+    update = client.patch(
+        f"/medications/{lisinopril['id']}",
+        json={"frequency": "At 9 AM, following the current prescription label"},
+    )
+    assert update.status_code == 200
+
+    refreshed = client.post("/chat", json={"message": "How often do I take Lisinopril?"}).json()
+    assert "9 am" in refreshed["message"]["content"].lower()
+    assert refreshed["grounded"] is True
+
+    unsafe = client.post(
+        "/chat", json={"message": "Should I take an extra Lisinopril dose?"}
+    ).json()
+    assert unsafe["grounded"] is True
+    assert unsafe["handoff_offered"] is True
+    assert "can't safely" in unsafe["message"]["content"].lower()
+    assert "prescription label" in unsafe["message"]["content"].lower()
 
 
 def test_people_crud_validation_not_found_and_reference_conflict(client: TestClient) -> None:

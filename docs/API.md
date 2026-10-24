@@ -165,12 +165,13 @@ interface ConversationContext {
   messages: ConversationMessage[];
   people: Person[];
   memories: Memory[];
+  medications: Medication[];
   upcoming_events: Event[];
   pending_handoffs: Handoff[];
 }
 ```
 
-- `GET /conversation/context` → `200 ConversationContext`. `messages` is the latest 12 in chronological order; `upcoming_events` contains scheduled events in the next seven days; `pending_handoffs` includes `pending` and `answered` items.
+- `GET /conversation/context` → `200 ConversationContext`. `messages` is the latest 12 in chronological order; `medications` contains caregiver-entered active and inactive medicine records; `upcoming_events` contains scheduled events in the next seven days; `pending_handoffs` includes `pending` and `answered` items.
 - `GET /conversation/messages?limit={1..50}` → `200 { "items": ConversationMessage[] }`, chronological; default `12`.
 - `DELETE /conversation/messages` → `204`; clears short-term transcript only and never deletes personal data.
 - `POST /chat` with `{ "message": string }` → `200 ChatResponse`. The server persists both user and assistant messages.
@@ -180,7 +181,7 @@ interface ChatResponse {
   message: ConversationMessage;
   grounded: boolean;
   sources: Array<{
-    type: "person" | "memory" | "event" | "handoff";
+    type: "person" | "memory" | "event" | "handoff" | "medication";
     id: number;
   }>;
   handoff_offered: boolean;
@@ -188,6 +189,8 @@ interface ChatResponse {
 ```
 
 `grounded` is true only when every personal claim in the answer is supported by the listed stored records. For greetings and non-personal conversational text it may be false with no sources. When the answer would require an unknown personal fact, the response must state that it does not know, set `handoff_offered: true`, and include no invented claim. Calling `/chat` never creates a handoff; consent is a separate explicit request.
+
+Medication answers may repeat caregiver-entered name, purpose, dose, frequency, location, and refill information with `medication` sources. Questions about changing, skipping, doubling, making up, or combining doses must not produce individualized clinical advice: the response directs the person to the prescription label and a caregiver, pharmacist, or clinician, and offers a caregiver handoff.
 
 Example unknown answer:
 

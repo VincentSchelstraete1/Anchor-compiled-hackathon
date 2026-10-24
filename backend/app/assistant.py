@@ -37,6 +37,32 @@ PREFERENCE_WORDS = {
     "enjoys",
 }
 ROUTINE_WORDS = {"routine", "usually", "always", "often", "activity", "activities", "doing"}
+MEDICATION_WORDS = {
+    "medicine",
+    "medicines",
+    "medication",
+    "medications",
+    "pill",
+    "pills",
+    "dose",
+    "dosage",
+    "prescription",
+    "refill",
+}
+MEDICATION_SAFETY_WORDS = {
+    "change",
+    "double",
+    "extra",
+    "interaction",
+    "interactions",
+    "missed",
+    "overdose",
+    "reaction",
+    "reactions",
+    "skip",
+    "stop",
+    "stopped",
+}
 QUESTION_FILLER_WORDS = {
     "about",
     "does",
@@ -63,6 +89,7 @@ def answer_message(
     *,
     people: list[dict[str, Any]],
     memories: list[dict[str, Any]],
+    medications: list[dict[str, Any]],
     events: list[dict[str, Any]],
     handoffs: list[dict[str, Any]],
     history: list[dict[str, Any]],
@@ -72,6 +99,7 @@ def answer_message(
         message,
         people=people,
         memories=memories,
+        medications=medications,
         events=events,
         handoffs=handoffs,
         history=history,
@@ -82,6 +110,7 @@ def answer_message(
     context = {
         "people": people,
         "memories": memories,
+        "medications": medications,
         "events": events,
         "handoffs": handoffs,
     }
@@ -98,6 +127,7 @@ def _grounded_answer(
     *,
     people: list[dict[str, Any]],
     memories: list[dict[str, Any]],
+    medications: list[dict[str, Any]],
     events: list[dict[str, Any]],
     handoffs: list[dict[str, Any]],
     history: list[dict[str, Any]],
@@ -137,11 +167,22 @@ def _grounded_answer(
         )
 
     person = _resolve_person(message, people, history)
+    named_medication = _medication_mentioned(normalized, medications)
     event_intent = bool(words & EVENT_WORDS)
     personal_memory_intent = bool(words & (MEMORY_WORDS | PREFERENCE_WORDS | ROUTINE_WORDS))
+    medication_intent = bool(words & MEDICATION_WORDS) or named_medication is not None
 
     if words & FOLLOW_UP_WORDS and person is None:
         return _unknown(people)
+
+    if medication_intent:
+        return _medication_answer(
+            message,
+            medications=medications,
+            people=people,
+            person=person,
+            named_medication=named_medication,
+        )
 
     if event_intent:
         upcoming = _upcoming_events(events, person_id=person["id"] if person else None)
@@ -293,6 +334,121 @@ def _upcoming_events(
         ):
             upcoming.append(event)
     return sorted(upcoming, key=lambda event: (event["start_time"], event["id"]))
+
+
+def _medication_mentioned(
+    normalized_message: str, medications: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    padded = f" {normalized_message} "
+    return next(
+        (
+            medication
+            for medication in medications
+            if f" {_normalize(medication['name'])} " in padded
+        ),
+        None,
+    )
+
+
+def _medication_answer(
+    message: str,
+    *,
+    medications: list[dict[str, Any]],
+    people: list[dict[str, Any]],
+    person: dict[str, Any] | None,
+    named_medication: dict[str, Any] | None,
+) -> AssistantResult:
+    normalized = _normalize(message)
+    words = set(normalized.split())
+    candidates = [
+        medication
+        for medication in medications
+        if medication["active"] and (person is None or medication["person_id"] == person["id"])
+    ]
+    selected = named_medication or (candidates[0] if len(candidates) == 1 else None)
+    safety_question = bool(words & MEDICATION_SAFETY_WORDS) or any(
+        phrase in normalized
+        for phrase in ("side effect", "should i", "can i", "take it now", "take this now")
+    )
+
+    if safety_question:
+        if selected:
+            sources = _medication_sources(selected, people)
+            return AssistantResult(
+                f"Your caregiver record says {selected['name']} is {selected['dosage']}, "
+                f"{selected['frequency'].lower()}. I can't safely tell whether to change, skip, "
+                "or make up a dose. Please check the prescription label and ask your caregiver, "
+                "pharmacist, or clinician.",
+                True,
+                sources,
+                True,
+            )
+        return AssistantResult(
+            "I can't safely advise changing, skipping, or making up a medicine dose. Please check "
+            "the prescription label and ask your caregiver, pharmacist, or clinician.",
+            False,
+            [],
+            True,
+        )
+
+    if selected:
+        sources = _medication_sources(selected, people)
+        if words & {"where", "kept", "located", "find"}:
+            content = (
+                f"Your caregiver record says {selected['name']} is kept {selected['location']}."
+            )
+        elif words & {"refill", "refills"}:
+            refill = selected["refill_date"]
+            content = (
+                f"Your caregiver record says {selected['name']} needs a refill by {refill}."
+                if refill
+                else f"There is no refill date recorded for {selected['name']}."
+            )
+        elif words & {"why", "purpose"} or "what is" in normalized and " for" in normalized:
+            content = f"Your caregiver record says {selected['name']} is for: {selected['purpose']}"
+        else:
+            content = (
+                f"Your caregiver record says {selected['name']} is {selected['dosage']}, "
+                f"{selected['frequency'].lower()}, and is kept {selected['location']}."
+            )
+        return AssistantResult(content, True, sources, False)
+
+    if candidates:
+        if words & {"where", "kept", "located", "find"}:
+            details = "; ".join(f"{item['name']} is kept {item['location']}" for item in candidates)
+        elif words & {"refill", "refills"}:
+            details = "; ".join(
+                f"{item['name']}: {item['refill_date'] or 'no refill date recorded'}"
+                for item in candidates
+            )
+        else:
+            details = "; ".join(
+                f"{item['name']}, {item['dosage']}, {item['frequency'].lower()}"
+                for item in candidates
+            )
+        sources = []
+        for item in candidates:
+            sources.extend(_medication_sources(item, people))
+        unique_sources = list(
+            {(source["type"], source["id"]): source for source in sources}.values()
+        )
+        return AssistantResult(
+            f"Your caregiver record lists: {details}.",
+            True,
+            unique_sources,
+            False,
+        )
+    return _unknown(people)
+
+
+def _medication_sources(
+    medication: dict[str, Any], people: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    sources = [{"type": "medication", "id": medication["id"]}]
+    person = _person_by_id(people, medication["person_id"])
+    if person:
+        sources.append({"type": "person", "id": person["id"]})
+    return sources
 
 
 def _person_by_id(people: list[dict[str, Any]], person_id: int | None) -> dict[str, Any] | None:

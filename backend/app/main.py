@@ -539,6 +539,10 @@ def create_app(
         ).fetchall()
         people = db.execute("SELECT * FROM people ORDER BY name, id").fetchall()
         memories = db.execute("SELECT * FROM memories ORDER BY created_at DESC, id DESC").fetchall()
+        medications = db.execute(
+            """SELECT * FROM medications
+            ORDER BY active DESC, refill_date IS NULL, refill_date, name, id"""
+        ).fetchall()
         events = db.execute(
             """SELECT * FROM events WHERE status = 'scheduled' AND start_time >= ?
             AND start_time <= ? ORDER BY start_time, id""",
@@ -551,6 +555,7 @@ def create_app(
             messages=[ConversationMessage(**_row(row)) for row in messages],
             people=[Person(**_row(row)) for row in people],
             memories=[Memory(**_row(row)) for row in memories],
+            medications=[Medication(**_row(row)) for row in medications],
             upcoming_events=[Event(**_row(row)) for row in events],
             pending_handoffs=[Handoff(**_row(row)) for row in handoffs],
         )
@@ -566,6 +571,7 @@ def create_app(
         ).fetchall()
         people = [_row(row) for row in db.execute("SELECT * FROM people").fetchall()]
         memories = [_row(row) for row in db.execute("SELECT * FROM memories").fetchall()]
+        medications = [_row(row) for row in db.execute("SELECT * FROM medications").fetchall()]
         events = [
             _row(row)
             for row in db.execute("SELECT * FROM events ORDER BY start_time LIMIT 50").fetchall()
@@ -575,6 +581,7 @@ def create_app(
             payload.message,
             people=people,
             memories=memories,
+            medications=medications,
             events=events,
             handoffs=handoffs,
             history=[_row(row) for row in reversed(history_rows)],

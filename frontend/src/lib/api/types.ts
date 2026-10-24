@@ -87,6 +87,7 @@ export interface ConversationContext {
   messages: ConversationMessage[];
   people: Person[];
   memories: Memory[];
+  medications: Medication[];
   upcoming_events: Event[];
   pending_handoffs: Handoff[];
 }
@@ -94,7 +95,7 @@ export interface ChatRequest { message: string; }
 export interface ChatResponse {
   message: ConversationMessage;
   grounded: boolean;
-  sources: Array<{ type: "person" | "memory" | "event" | "handoff"; id: number }>;
+  sources: Array<{ type: "person" | "memory" | "event" | "handoff" | "medication"; id: number }>;
   handoff_offered: boolean;
 }
 

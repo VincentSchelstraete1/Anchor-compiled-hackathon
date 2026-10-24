@@ -242,7 +242,7 @@ class ChatRequest(StrictModel):
 
 
 class Source(StrictModel):
-    type: Literal["person", "memory", "event", "handoff"]
+    type: Literal["person", "memory", "event", "handoff", "medication"]
     id: int
 
 
@@ -257,5 +257,6 @@ class ConversationContext(StrictModel):
     messages: list[ConversationMessage]
     people: list[Person]
     memories: list[Memory]
+    medications: list[Medication]
     upcoming_events: list[Event]
     pending_handoffs: list[Handoff]
