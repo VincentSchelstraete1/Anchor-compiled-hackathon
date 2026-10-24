@@ -4,7 +4,7 @@ import type { TimeOfDay } from "./logic/home-context";
 // Warm ivory, sage and terracotta; evening and night soften and dim. All text pairs meet WCAG AA (see PALETTES notes).
 const PALETTES: Record<TimeOfDay, Record<string, string>> = {
   morning: { bg: "#F7F1E5", fg: "#2B2620", muted: "#5A5145", card: "#FFFBF3", border: "#DDD1BB", sage: "#3F6652", sageSoft: "#DDE7DC", terra: "#A5482C", terraSoft: "#F3DFD3", onAccent: "#FFFBF3" },
-  afternoon: { bg: "#F4ECDA", fg: "#2B2620", muted: "#574E42", card: "#FFFAF0", border: "#D9CCB2", sage: "#3F6652", sageSoft: "#D9E4D8", terra: "#A5482C", terraSoft: "#F1DACB", onAccent: "#FFFAF0" },
+  afternoon: { bg: "#F4ECDA", fg: "#2B2620", muted: "#574E42", card: "#FFFAF0", border: "#D9CCB2", sage: "#3F6652", sageSoft: "#D9E4D8", terra: "#A5482C", terraSoft: "#F7E6DB", onAccent: "#FFFAF0" },
   evening: { bg: "#E9DCC6", fg: "#271F19", muted: "#4F4438", card: "#F6ECD9", border: "#CDBD9F", sage: "#385C49", sageSoft: "#D3DFD0", terra: "#97401F", terraSoft: "#EDD3BF", onAccent: "#F6ECD9" },
   night: { bg: "#1E1A16", fg: "#F3EBDC", muted: "#CDC1AC", card: "#2A2520", border: "#4A4136", sage: "#A8C8B3", sageSoft: "#2B3A31", terra: "#E6A088", terraSoft: "#3B2A23", onAccent: "#1E1A16" },
 };
