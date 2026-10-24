@@ -4,10 +4,11 @@ Base URL: `http://localhost:8000`. JSON uses `snake_case`. Timestamps are ISO 86
 
 ## Common behavior
 
-- Request and response content type: `application/json` (except `204` responses).
+- Request and response content type: `application/json` (except `204` responses and the
+  `audio/mpeg` response from `POST /speech`).
 - Success: `200` read/update/action, `201` create, `204` delete.
 - Errors use `{ "error": { "code": "not_found", "message": "...", "details": {} } }`.
-- Error statuses: `400` invalid transition/domain rule, `404` missing record, `409` conflict, `422` malformed or validation-failing input, `500` unexpected server failure.
+- Error statuses: `400` invalid transition/domain rule, `404` missing record, `409` conflict, `422` malformed or validation-failing input, `500` unexpected server failure, and `503` when configured speech generation is temporarily unavailable.
 - List endpoints return `{ "items": [...] }`. The MVP does not paginate.
 - Strings are trimmed. Required strings must contain 1–2,000 characters unless a narrower limit is stated.
 - Foreign-key references must exist. A referenced person cannot be deleted while memories, events, or handoffs refer to it; return `409`.
@@ -166,6 +167,35 @@ Example unknown answer:
   "handoff_offered": true
 }
 ```
+
+## Speech synthesis
+
+### `POST /speech`
+
+Generates spoken audio on the backend so the OpenAI API key is never sent to the browser.
+
+Request:
+
+```ts
+interface SpeechRequest {
+  text: string;
+}
+```
+
+`text` is trimmed and must contain 1–4,096 characters.
+
+Response `200` is MP3 bytes with these headers:
+
+- `Content-Type: audio/mpeg`
+- `Cache-Control: no-store`
+- `X-Anchor-Voice-Disclosure: AI-generated voice`
+
+Invalid input returns `422`. Missing credentials, provider errors, timeouts, or empty provider output return
+`503` with error code `speech_unavailable`; the companion then uses browser speech synthesis as its fallback.
+
+The backend calls OpenAI's `gpt-4o-mini-tts` model by default. Server-only configuration is available through
+`OPENAI_API_KEY`, `ANCHOR_OPENAI_TTS_MODEL`, `ANCHOR_OPENAI_TTS_VOICE`,
+`ANCHOR_OPENAI_TTS_SPEED`, and `ANCHOR_OPENAI_TTS_INSTRUCTIONS`.
 
 ## Caregiver handoffs
 

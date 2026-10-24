@@ -4,6 +4,7 @@ import type {
   Event,
   Handoff,
   ListResponse,
+  SpeechRequest,
 } from "@/lib/api/types";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -72,10 +73,11 @@ export async function fetchSpeechAudio(text: string, signal: AbortSignal): Promi
   signal.addEventListener("abort", forward);
   const timer = setTimeout(forward, SPEECH_TIMEOUT_MS);
   try {
+    const payload: SpeechRequest = { text: text.slice(0, 4096) };
     const response = await fetch(`${BASE_URL}/speech`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text.slice(0, 4096) }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
     if (!response.ok) return null;

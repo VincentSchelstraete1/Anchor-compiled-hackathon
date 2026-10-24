@@ -75,6 +75,8 @@ export interface ChatResponse {
   handoff_offered: boolean;
 }
 
+export interface SpeechRequest { text: string; }
+
 export interface HealthResponse { status: "ok"; }
 export interface ApiError {
   error: { code: string; message: string; details?: Record<string, unknown> };
