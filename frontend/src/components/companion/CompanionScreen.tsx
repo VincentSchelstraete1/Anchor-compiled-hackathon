@@ -351,7 +351,7 @@ export function CompanionScreen() {
   return (
     <AmbientDisplay tod={now ? timeOfDay(now.getHours()) : "morning"} stateName={stateName}>
       <PersonSpotlight person={shownPerson} />
-      <div className="flex min-w-0 flex-col justify-between gap-8">
+      <div className="anchor-col flex min-w-0 flex-col gap-[clamp(0.625rem,1.6vh,1.5rem)]">
         <AmbientClock line={narrative.line} />
         <ConversationContextDisplay
           scene={scene}
@@ -402,8 +402,12 @@ export function CompanionScreen() {
           onInterrupt={interrupt}
           onTyped={(text) => void handleUtterance(text)}
         />
-        {offline ? <p className="text-xl text-[var(--a-muted)]">Showing sample content while Anchor&apos;s notes are unavailable.</p> : null}
-        {!voiceUnlocked ? <p className="text-xl text-[var(--a-muted)]">Press any key or tap once to turn on spoken reminders.</p> : null}
+        {offline || !voiceUnlocked ? (
+          <p className="text-lg text-[var(--a-muted)]">
+            {offline ? "Showing sample content while Anchor's notes are unavailable. " : ""}
+            {!voiceUnlocked ? "Press any key or tap once to turn on spoken reminders." : ""}
+          </p>
+        ) : null}
       </div>
       <ReminderManager people={people} isReady={isReady} canSpeak={canSpeak} present={presentReminder} />
       <CaregiverResponseListener people={people} isReady={isReady} canSpeak={canSpeak} announce={announceReply} onDelivered={() => void refresh()} />

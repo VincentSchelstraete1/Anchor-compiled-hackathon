@@ -90,34 +90,36 @@ export function VoiceController(p: Props) {
   const hfLive = p.handsFree && !p.muted && p.micStatus === "listening" && p.sessionOpen;
   const orbPhase: OrbPhase = p.voice === "idle" ? (hfLive ? "listening" : "idle") : p.voice;
   const label = p.waitingFor && p.stateName === "waiting_for_caregiver" ? `Waiting for ${p.waitingFor}` : STATE_LABEL[p.stateName] ?? "Ready";
-  const button = "inline-flex min-h-14 items-center gap-3 rounded-2xl px-5 text-xl font-semibold outline-offset-4 focus-visible:outline-4 focus-visible:outline-[var(--a-sage)]";
+  const button = "inline-flex min-h-14 items-center gap-2 rounded-2xl px-4 text-xl font-semibold outline-offset-4 focus-visible:outline-4 focus-visible:outline-[var(--a-sage)]";
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-6">
+    <div className="space-y-3">
+      <div className="flex items-center gap-4">
         <VoiceOrb phase={orbPhase} unavailable={!p.supported} onPress={p.onOrbPress} />
-        <div className="min-w-0">
-          <p className="text-4xl font-semibold" data-testid="state-label">{label}</p>
-          <p className="mt-1 flex items-center gap-2 text-xl text-[var(--a-muted)]" data-testid="mic-status">
-            <span aria-hidden="true" className={`inline-block size-3 shrink-0 rounded-full ${p.handsFree && p.micStatus === "listening" && !p.muted ? "bg-[var(--a-terra)]" : "border-2 border-[var(--a-muted)]"}`} />
-            <span role="status">{micStatusText(p)}</span>
-          </p>
-          <p className="mt-1 text-xl text-[var(--a-muted)]">Hold Space to talk</p>
+        <div className="min-w-0 flex-1 space-y-2">
+          <div>
+            <p className="text-[clamp(1.75rem,4.2vh,2.25rem)] font-semibold leading-tight" data-testid="state-label">{label}</p>
+            <p className="flex items-center gap-2 text-xl leading-snug text-[var(--a-muted)]" data-testid="mic-status">
+              <span aria-hidden="true" className={`inline-block size-3 shrink-0 rounded-full ${p.handsFree && p.micStatus === "listening" && !p.muted ? "bg-[var(--a-terra)]" : "border-2 border-[var(--a-muted)]"}`} />
+              <span role="status">{micStatusText(p)}</span>
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {p.supported ? (
+              <button type="button" onClick={p.onToggleHandsFree} aria-pressed={p.handsFree} className={`${button} ${p.handsFree ? "bg-[var(--a-sage)] text-[var(--a-on-accent)]" : "border-2 border-[var(--a-sage)] text-[var(--a-sage)]"}`}>
+                <Radio aria-hidden="true" className="size-6" />
+                {p.handsFree ? "Hands-free is on" : "Start hands-free"}
+              </button>
+            ) : null}
+            {p.handsFree ? (
+              <button type="button" onClick={p.onToggleMute} aria-pressed={p.muted} className={`${button} border-2 border-[var(--a-border)]`}>
+                {p.muted ? <MicOff aria-hidden="true" className="size-6" /> : <Mic aria-hidden="true" className="size-6" />}
+                {p.muted ? "Unmute" : "Mute"}
+              </button>
+            ) : null}
+            <span className="text-xl text-[var(--a-muted)]">or hold Space</span>
+          </div>
         </div>
-      </div>
-      <div className="flex flex-wrap gap-3">
-        {p.supported ? (
-          <button type="button" onClick={p.onToggleHandsFree} aria-pressed={p.handsFree} className={`${button} ${p.handsFree ? "bg-[var(--a-sage)] text-[var(--a-on-accent)]" : "border-2 border-[var(--a-sage)] text-[var(--a-sage)]"}`}>
-            <Radio aria-hidden="true" className="size-6" />
-            {p.handsFree ? "Hands-free is on" : "Start hands-free"}
-          </button>
-        ) : null}
-        {p.handsFree ? (
-          <button type="button" onClick={p.onToggleMute} aria-pressed={p.muted} className={`${button} border-2 border-[var(--a-border)]`}>
-            {p.muted ? <MicOff aria-hidden="true" className="size-6" /> : <Mic aria-hidden="true" className="size-6" />}
-            {p.muted ? "Unmute" : "Mute"}
-          </button>
-        ) : null}
       </div>
       <form onSubmit={submit} className="flex gap-3">
         <label htmlFor="typed-message" className="sr-only">
@@ -129,7 +131,7 @@ export function VoiceController(p: Props) {
           onChange={(e) => setTyped(e.target.value)}
           autoComplete="off"
           placeholder="Or type here…"
-          className="min-w-0 flex-1 rounded-2xl border border-[var(--a-border)] bg-[var(--a-card)] px-5 py-3 text-xl text-[var(--a-fg)] placeholder:text-[var(--a-muted)] focus-visible:outline-4 focus-visible:outline-[var(--a-sage)]"
+          className="min-h-14 min-w-0 flex-1 rounded-2xl border border-[var(--a-border)] bg-[var(--a-card)] px-5 text-xl text-[var(--a-fg)] placeholder:text-[var(--a-muted)] focus-visible:outline-4 focus-visible:outline-[var(--a-sage)]"
         />
         <button type="submit" disabled={!typed.trim() || p.busy} className={`${button} bg-[var(--a-sage-soft)] text-[var(--a-fg)] disabled:opacity-50`}>
           Send
