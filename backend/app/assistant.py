@@ -56,7 +56,7 @@ SYMPTOM_WORDS = {
     "symptom",
     "symptoms",
 }
-CONTACT_WORDS = {"call", "contact", "message", "phone", "text"}
+CONTACT_WORDS = {"call", "contact", "message", "text"}
 ACTION_COMPLETION_PHRASES = {
     "call was placed",
     "i called",
@@ -81,10 +81,10 @@ EVENT_WORDS = {
     "arrive",
     "arrived",
     "arrival",
-    "event",
-    "events",
+    "appointment",
+    "appointments",
+    "scheduled",
     "upcoming",
-    "when",
 }
 MEMORY_WORDS = {"memory", "memories", "remember", "did", "shared", "together"}
 PREFERENCE_WORDS = {
@@ -100,6 +100,49 @@ PREFERENCE_WORDS = {
     "enjoys",
 }
 ROUTINE_WORDS = {"routine", "usually", "always", "often", "activity", "activities", "doing"}
+LOCATION_WORDS = {"address", "home", "live", "lived", "location", "place", "where"}
+PERSONAL_FACT_WORDS = {
+    "address",
+    "age",
+    "appointment",
+    "appointments",
+    "birthday",
+    "blood",
+    "born",
+    "favorite",
+    "favourite",
+    "glasses",
+    "keys",
+    "location",
+    "medication",
+    "medications",
+    "memory",
+    "memories",
+    "preference",
+    "preferences",
+    "phone",
+    "routine",
+    "routines",
+    "schedule",
+    "scheduled",
+    "school",
+    "schools",
+    "wallet",
+}
+PERSONAL_EVENT_WORDS = {
+    "appointment",
+    "appointments",
+    "arrive",
+    "arrived",
+    "coming",
+    "scheduled",
+    "upcoming",
+    "visit",
+    "visiting",
+}
+ITEM_WORDS = {"glasses", "keys", "phone", "wallet"}
+LIVE_INFO_WORDS = {"news", "score", "scores", "traffic", "weather"}
+LIVE_TIME_WORDS = {"current", "currently", "latest", "now", "today", "tonight"}
 QUESTION_FILLER_WORDS = {
     "about",
     "does",
@@ -109,6 +152,7 @@ QUESTION_FILLER_WORDS = {
     "together",
     "what",
     "with",
+    "where",
     "your",
 }
 
@@ -135,6 +179,10 @@ def answer_message(
     if rule_result is not None:
         return rule_result
 
+    live_result = _live_information_answer(message)
+    if live_result is not None:
+        return live_result
+
     personal_query = _is_personal_query(message, people=people, history=history)
     if not personal_query:
         result = _openai_general_answer(message, history) if OPENAI_API_KEY else None
@@ -149,8 +197,9 @@ def answer_message(
         history=history,
     )
     if safe_result.grounded:
-        return safe_result
-    return safe_result if safe_result.handoff_offered else _unknown(people)
+        natural = _openai_grounded_answer(message, safe_result, history) if OPENAI_API_KEY else None
+        return natural or safe_result
+    return safe_result if safe_result.handoff_offered else _unknown_personal(message, people)
 
 
 def _safety_rule_answer(
@@ -206,7 +255,7 @@ def _safety_rule_answer(
                 [{"type": "memory", "id": memory["id"]}],
                 False,
             )
-        return _unknown(people)
+        return _unknown_personal(message, people)
 
     if words & SYMPTOM_WORDS:
         return AssistantResult(
@@ -247,13 +296,47 @@ def _is_personal_query(
     words = set(normalized.split())
     if _resolve_person(message, people, history) is not None:
         return True
-    if words & {"my", "our", "we"}:
+    if words & {"my", "our"} and words & PERSONAL_FACT_WORDS:
         return True
     if "i" in words and words & {"age", "birthday", "born", "from", "live", "lived"}:
         return True
-    if words & EVENT_WORDS:
+    if words & {"we", "our"} and words & {
+        "family",
+        "memory",
+        "memories",
+        "routine",
+        "routines",
+        "together",
+        "usually",
+    }:
         return True
-    return bool(words & {"family", "relative", "relatives", "appointment", "appointments"})
+    if words & PERSONAL_EVENT_WORDS and words & {
+        "coming",
+        "appointment",
+        "appointments",
+        "scheduled",
+        "upcoming",
+        "visit",
+        "visiting",
+        "who",
+    }:
+        return True
+    return bool(words & {"family", "relative", "relatives"})
+
+
+def _live_information_answer(message: str) -> AssistantResult | None:
+    words = set(_normalize(message).split())
+    if not (words & LIVE_INFO_WORDS and words & LIVE_TIME_WORDS):
+        return None
+    return AssistantResult(
+        (
+            "I don't have live information for that. Please check a current weather, news, "
+            "traffic, or scores source."
+        ),
+        False,
+        [],
+        False,
+    )
 
 
 def _general_fallback(message: str) -> AssistantResult:
@@ -314,10 +397,12 @@ def _grounded_answer(
 
     person = _resolve_person(message, people, history)
     event_intent = bool(words & EVENT_WORDS)
-    personal_memory_intent = bool(words & (MEMORY_WORDS | PREFERENCE_WORDS | ROUTINE_WORDS))
+    personal_memory_intent = bool(
+        words & (MEMORY_WORDS | PREFERENCE_WORDS | ROUTINE_WORDS | LOCATION_WORDS)
+    )
 
     if words & FOLLOW_UP_WORDS and person is None:
-        return _unknown(people)
+        return _unknown_personal(message, people)
 
     if event_intent:
         upcoming = _upcoming_events(events, person_id=person["id"] if person else None)
@@ -334,7 +419,7 @@ def _grounded_answer(
                 sources,
                 False,
             )
-        return _unknown(people)
+        return _unknown_personal(message, people)
 
     if personal_memory_intent:
         matching_memories = _relevant_memories(message, memories, person)
@@ -346,11 +431,11 @@ def _grounded_answer(
             return AssistantResult(
                 f"A stored memory says: {memory['content']}", True, sources, False
             )
-        return _unknown(people)
+        return _unknown_personal(message, people)
 
     if _is_family_list_question(words):
         if not people:
-            return _unknown(people)
+            return _unknown_personal(message, people)
         descriptions = [f"{item['name']} is your {item['relationship']}" for item in people]
         return AssistantResult(
             "; ".join(descriptions) + ".",
@@ -368,7 +453,7 @@ def _grounded_answer(
             False,
         )
 
-    return _unknown(people)
+    return _unknown_personal(message, people)
 
 
 def _asks_about_person(normalized: str, words: set[str], person: dict[str, Any]) -> bool:
@@ -432,7 +517,7 @@ def _relevant_memories(
     person_name_words = set(_normalize(person["name"]).split()) if person else set()
     meaningful_words = {word for word in words - person_name_words if len(word) > 3}
     topic_words = meaningful_words - (
-        PREFERENCE_WORDS | ROUTINE_WORDS | MEMORY_WORDS | QUESTION_FILLER_WORDS
+        PREFERENCE_WORDS | ROUTINE_WORDS | MEMORY_WORDS | LOCATION_WORDS | QUESTION_FILLER_WORDS
     )
     candidates = [
         memory for memory in memories if person is None or memory["person_id"] == person["id"]
@@ -455,6 +540,11 @@ def _relevant_memories(
         if words & ROUTINE_WORDS and (
             category in {"routine", "routines", "activity", "activities"}
             or searchable & ROUTINE_WORDS
+        ):
+            overlap += 4
+        if words & LOCATION_WORDS and (
+            category in {"address", "home", "location", "place", "places"}
+            or searchable & LOCATION_WORDS
         ):
             overlap += 4
         return (overlap, memory["created_at"], memory["id"])
@@ -500,17 +590,68 @@ def _caregiver_name(people: list[dict[str, Any]]) -> str:
     return caregiver["name"] if caregiver else "your caregiver"
 
 
-def _unknown(people: list[dict[str, Any]]) -> AssistantResult:
-    return AssistantResult(
-        f"I don't have that information. Would you like me to ask {_caregiver_name(people)}?",
-        False,
-        [],
-        True,
-    )
+def _unknown_personal(message: str, people: list[dict[str, Any]]) -> AssistantResult:
+    words = set(_normalize(message).split())
+    caregiver = _caregiver_name(people)
+    if "where" in words and words & ITEM_WORDS:
+        item = next(word for word in ITEM_WORDS if word in words)
+        verb = "is" if item == "phone" else "are"
+        pronoun = "it" if item == "phone" else "them"
+        content = (
+            f"I don't know where your {item} {verb}. Try checking the places you usually set {pronoun} "
+            f"down, your pockets, and nearby surfaces. Would you like me to ask {caregiver}?"
+        )
+    elif words & PERSONAL_EVENT_WORDS:
+        content = (
+            "I don't have a caregiver-confirmed schedule for that. "
+            f"Would you like me to ask {caregiver}?"
+        )
+    else:
+        content = (
+            "I don't have that information in the caregiver notes yet. "
+            f"Would you like me to ask {caregiver}?"
+        )
+    return AssistantResult(content, False, [], True)
 
 
 def _normalize(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+
+
+def _openai_grounded_answer(
+    message: str,
+    verified: AssistantResult,
+    history: list[dict[str, Any]],
+) -> AssistantResult | None:
+    if any(source["type"] == "handoff" for source in verified.sources):
+        return None
+    system = (
+        "You are Anchor, a warm conversational companion for an older adult. Rewrite the supplied "
+        "VERIFIED_ANSWER naturally and concisely. It is the complete set of personal facts you may "
+        "use. Preserve its meaning exactly. Do not add, infer, or guess any person, relationship, "
+        "memory, preference, location, medication, date, time, event status, or completed action. "
+        "A scheduled event is only a plan; never imply it occurred or that someone arrived. "
+        "Return JSON that matches the required schema."
+    )
+    messages = [{"role": "system", "content": system}]
+    recent_users = [item for item in history if item["role"] == "user"][-4:]
+    messages.extend({"role": "user", "content": item["content"]} for item in recent_users[:-1])
+    messages.append(
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "question": message,
+                    "verified_answer": verified.content,
+                    "verified_sources": verified.sources,
+                }
+            ),
+        }
+    )
+    content = _request_openai_content(messages, "anchor_grounded_response", temperature=0.2)
+    if content is None or not _safe_grounded_response(content, verified):
+        return None
+    return AssistantResult(content, True, verified.sources, False)
 
 
 def _openai_general_answer(message: str, history: list[dict[str, Any]]) -> AssistantResult | None:
@@ -520,15 +661,26 @@ def _openai_general_answer(message: str, history: list[dict[str, Any]]) -> Assis
         "conversation. Do not invent or assert personal facts, relationships, memories, schedules, "
         "medications, locations, or actions. Do not claim you called, texted, messaged, scheduled, "
         "or contacted anyone. Do not provide personalized medical advice. Use conversation history "
-        "only for conversational continuity, never as authoritative personal data. The history "
-        "contains user turns only; never infer that a user statement was caregiver-confirmed. "
-        "Return JSON that matches the required schema."
+        "only for conversational continuity, never as authoritative personal data. Never treat a "
+        "previous assistant statement as caregiver-confirmed. If asked about live weather, news, "
+        "scores, traffic, prices, or other current external information, clearly say you do not "
+        "have live access and suggest checking a current source. Return JSON that matches the "
+        "required schema."
     )
     messages = [{"role": "system", "content": system}]
-    recent = [item for item in history if item["role"] == "user"][-6:]
-    messages.extend({"role": "user", "content": item["content"]} for item in recent)
+    recent = history[-10:]
+    messages.extend({"role": item["role"], "content": item["content"]} for item in recent)
     if not recent or recent[-1]["role"] != "user" or recent[-1]["content"] != message:
         messages.append({"role": "user", "content": message})
+    content = _request_openai_content(messages, "anchor_general_response", temperature=0.6)
+    if content is None or not _safe_general_response(content):
+        return None
+    return AssistantResult(content, False, [], False)
+
+
+def _request_openai_content(
+    messages: list[dict[str, str]], schema_name: str, *, temperature: float
+) -> str | None:
     payload = json.dumps(
         {
             "model": OPENAI_MODEL,
@@ -536,7 +688,7 @@ def _openai_general_answer(message: str, history: list[dict[str, Any]]) -> Assis
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "anchor_general_response",
+                    "name": schema_name,
                     "strict": True,
                     "schema": {
                         "type": "object",
@@ -546,8 +698,9 @@ def _openai_general_answer(message: str, history: list[dict[str, Any]]) -> Assis
                     },
                 },
             },
-            "temperature": 0.6,
+            "temperature": temperature,
             "max_tokens": 180,
+            "store": False,
         }
     ).encode()
     request = urllib.request.Request(
@@ -563,10 +716,7 @@ def _openai_general_answer(message: str, history: list[dict[str, Any]]) -> Assis
         with urllib.request.urlopen(request, timeout=15) as response:
             body = json.loads(response.read())
         parsed = json.loads(body["choices"][0]["message"]["content"])
-        content = str(parsed["content"]).strip()
-        if not _safe_general_response(content):
-            return None
-        return AssistantResult(content, False, [], False)
+        return str(parsed["content"]).strip()
     except (KeyError, TypeError, ValueError, urllib.error.URLError, TimeoutError):
         return None
 
@@ -578,3 +728,22 @@ def _safe_general_response(content: str) -> bool:
         and len(content) <= 1000
         and not any(phrase in normalized for phrase in ACTION_COMPLETION_PHRASES)
     )
+
+
+def _safe_grounded_response(content: str, verified: AssistantResult) -> bool:
+    if not _safe_general_response(content):
+        return False
+    normalized = _normalize(content)
+    verified_normalized = _normalize(verified.content)
+    response_numbers = set(re.findall(r"\d+", normalized))
+    verified_numbers = set(re.findall(r"\d+", verified_normalized))
+    if not response_numbers <= verified_numbers:
+        return False
+    if any(source["type"] == "event" for source in verified.sources) and any(
+        phrase in normalized
+        for phrase in ("already visited", "has arrived", "have arrived", "visit happened")
+    ):
+        return False
+    verified_words = {word for word in verified_normalized.split() if len(word) > 3}
+    response_words = {word for word in normalized.split() if len(word) > 3}
+    return bool(verified_words & response_words)
