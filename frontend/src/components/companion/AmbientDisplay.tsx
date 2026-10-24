@@ -12,6 +12,23 @@ const PALETTES: Record<TimeOfDay, Record<string, string>> = {
 const CSS = `
 @keyframes anchor-breathe { 0%,100% { transform: scale(1); opacity: .55 } 50% { transform: scale(1.28); opacity: 0 } }
 @keyframes anchor-speak { 0%,100% { transform: scaleY(.35) } 50% { transform: scaleY(1) } }
+.anchor-photo { aspect-ratio: 4 / 3 }
+.anchor-clock { font-size: clamp(3rem, min(13vh, 16cqw), 9rem); white-space: nowrap; line-height: 1 }
+/* Desktop and tablet-landscape: the whole experience fits one viewport, so nothing scrolls. */
+@media (min-width: 1024px) and (min-height: 620px) {
+  .anchor-shell { height: 100dvh; overflow: hidden; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) }
+  .anchor-photo { aspect-ratio: auto; flex: 1 1 0; min-height: 0 }
+  .anchor-col { min-height: 0 }
+  .anchor-panel { flex: 1 1 0; min-height: 0; overflow-y: auto }
+  .anchor-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden }
+}
+/* Home-screen extras that give way when the viewport is short, so nothing has to scroll. */
+@media (min-width: 1024px) and (max-height: 840px) {
+  .anchor-optional { display: none }
+  .anchor-col { gap: 0.5rem }
+  .anchor-clock { font-size: clamp(3rem, min(12vh, 16cqw), 9rem) }
+  .anchor-clamp { -webkit-line-clamp: 2 }
+}
 @media (prefers-reduced-motion: no-preference) {
   .anchor-ring { animation: anchor-breathe 2.8s ease-out infinite }
   .anchor-ring-2 { animation-delay: 1.4s }
@@ -31,7 +48,7 @@ export function AmbientDisplay({ tod, stateName, children }: { tod: TimeOfDay; s
       data-tod={tod}
       data-state={stateName}
       style={vars}
-      className="grid min-h-dvh gap-8 p-6 sm:p-8 lg:grid-cols-[1.1fr_1fr] lg:gap-12 lg:p-12 [font-family:Arial,Helvetica,sans-serif]"
+      className="anchor-shell grid min-h-dvh gap-5 p-4 sm:p-6 lg:gap-8 lg:p-8 [font-family:Arial,Helvetica,sans-serif]"
     >
       <style>{CSS}</style>
       {children}

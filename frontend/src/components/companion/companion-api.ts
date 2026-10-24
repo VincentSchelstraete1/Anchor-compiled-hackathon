@@ -58,3 +58,33 @@ export function createHandoff(caregiverPersonId: number, question: string): Prom
 export function markHandoffDelivered(id: number): Promise<Handoff> {
   return request<Handoff>(`/handoffs/${id}/deliver`, { method: "POST" });
 }
+
+const SPEECH_TIMEOUT_MS = 12000;
+
+/**
+ * POST /speech -> MP3. Returns null on any failure (503 when unconfigured, network, timeout) so the caller can
+ * fall back to browser speech. Aborts when `signal` fires.
+ */
+export async function fetchSpeechAudio(text: string, signal: AbortSignal): Promise<Blob | null> {
+  const controller = new AbortController();
+  const forward = () => controller.abort();
+  if (signal.aborted) return null;
+  signal.addEventListener("abort", forward);
+  const timer = setTimeout(forward, SPEECH_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${BASE_URL}/speech`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text.slice(0, 4096) }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    return blob.size > 0 ? blob : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", forward);
+  }
+}

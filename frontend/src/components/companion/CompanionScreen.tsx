@@ -24,7 +24,7 @@ import { stepOffer, type HandoffOffer } from "./logic/consent";
 import { homeNarrative, pickHomeMemory, timeOfDay } from "./logic/home-context";
 import { isAcknowledgement, reminderSpeech } from "./logic/reminders";
 import { selectScene } from "./logic/scene-selector";
-import { cancelSpeech, speak, synthesisSupported, type SpeakResult } from "./speech";
+import { cancelSpeech, speak, synthesisSupported, useVoiceSource, type SpeakResult } from "./speech";
 import { useNow } from "./useNow";
 import { useVoiceInput, type TranscriptSource } from "./useVoiceInput";
 import type { ConversationContext } from "@/lib/api/types";
@@ -38,6 +38,7 @@ const FAILURE_LINE = "I'm having trouble reaching my notes right now. Please try
 
 export function CompanionScreen() {
   const now = useNow();
+  const voiceSource = useVoiceSource();
   const [context, setContext] = useState<ConversationContext | null>(null);
   const [offline, setOffline] = useState(false);
   const [ambient, dispatch] = useReducer(ambientReducer, initialAmbient);
@@ -351,7 +352,7 @@ export function CompanionScreen() {
   return (
     <AmbientDisplay tod={now ? timeOfDay(now.getHours()) : "morning"} stateName={stateName}>
       <PersonSpotlight person={shownPerson} />
-      <div className="flex min-w-0 flex-col justify-between gap-8">
+      <div className="anchor-col flex min-w-0 flex-col gap-[clamp(0.625rem,1.6vh,1.5rem)]">
         <AmbientClock line={narrative.line} />
         <ConversationContextDisplay
           scene={scene}
@@ -402,8 +403,11 @@ export function CompanionScreen() {
           onInterrupt={interrupt}
           onTyped={(text) => void handleUtterance(text)}
         />
-        {offline ? <p className="text-xl text-[var(--a-muted)]">Showing sample content while Anchor&apos;s notes are unavailable.</p> : null}
-        {!voiceUnlocked ? <p className="text-xl text-[var(--a-muted)]">Press any key or tap once to turn on spoken reminders.</p> : null}
+        <p className="text-lg text-[var(--a-muted)]" data-testid="voice-disclosure">
+          {voiceSource === "ai" ? "Anchor's voice is AI-generated. " : "Computer voice in use; the AI voice is unavailable. "}
+          {offline ? "Sample content shown. " : ""}
+          {!voiceUnlocked ? "Press any key to turn on sound." : ""}
+        </p>
       </div>
       <ReminderManager people={people} isReady={isReady} canSpeak={canSpeak} present={presentReminder} />
       <CaregiverResponseListener people={people} isReady={isReady} canSpeak={canSpeak} announce={announceReply} onDelivered={() => void refresh()} />
