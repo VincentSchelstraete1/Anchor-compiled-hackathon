@@ -24,7 +24,10 @@ export function PeopleManager() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
+    const timer = window.setTimeout(() => {
+      if (new URLSearchParams(window.location.search).get("new") === "1") setEditing(null);
+      void load();
+    }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
 

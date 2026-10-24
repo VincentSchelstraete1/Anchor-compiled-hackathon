@@ -1,7 +1,11 @@
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { DashboardShell } from "@/components/caregiver/dashboard-shell";
 
 export default function CaregiverLayout({ children }: { children: ReactNode }) {
-  return <DashboardShell>{children}</DashboardShell>;
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#fbf8f0]" />}>
+      <DashboardShell>{children}</DashboardShell>
+    </Suspense>
+  );
 }
