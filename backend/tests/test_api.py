@@ -116,8 +116,20 @@ def test_fictional_demo_seed_is_idempotent_persistent_and_available_to_companion
         second = demo_client.post("/demo/seed")
 
         assert first.status_code == 200
-        assert first.json() == {"seeded": True, "people": 4, "memories": 10, "events": 5}
-        assert second.json() == {"seeded": False, "people": 4, "memories": 10, "events": 5}
+        assert first.json() == {
+            "seeded": True,
+            "people": 4,
+            "memories": 10,
+            "events": 5,
+            "medications": 3,
+        }
+        assert second.json() == {
+            "seeded": False,
+            "people": 4,
+            "memories": 10,
+            "events": 5,
+            "medications": 3,
+        }
 
         context = demo_client.get("/conversation/context").json()
         assert len(context["people"]) == 4
@@ -158,6 +170,44 @@ def test_existing_user_data_is_not_automatically_seeded(tmp_path: Path) -> None:
     restarted = create_app(database_path, seed=True, uploads_path=tmp_path / "uploads")
     with TestClient(restarted) as restarted_client:
         assert restarted_client.get("/people").json()["items"] == [person]
+
+
+def test_medication_crud_filters_validation_and_not_found(client: TestClient) -> None:
+    person = create_person(client)
+    payload = {
+        "person_id": person["id"],
+        "name": "Vitamin D3",
+        "purpose": "Caregiver-recorded supplement",
+        "dosage": "1,000 IU",
+        "frequency": "Once each morning",
+        "location": "Kitchen medicine cabinet",
+        "refill_date": "2026-11-15",
+        "notes": "Check the current bottle label.",
+        "active": True,
+    }
+    invalid_person = client.post("/medications", json={**payload, "person_id": 999})
+    assert invalid_person.status_code == 404
+
+    created = client.post("/medications", json=payload)
+    assert created.status_code == 201
+    medication = created.json()
+    assert medication["created_at"].endswith("Z")
+    assert client.get(f"/medications?person_id={person['id']}&active=true").json()["items"] == [
+        medication
+    ]
+
+    updated = client.patch(
+        f"/medications/{medication['id']}",
+        json={"location": "Hall cupboard", "active": False, "refill_date": None},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["location"] == "Hall cupboard"
+    assert updated.json()["active"] is False
+    assert updated.json()["refill_date"] is None
+    assert client.patch(f"/medications/{medication['id']}", json={}).status_code == 422
+    assert client.get("/medications/999").status_code == 404
+    assert client.delete(f"/medications/{medication['id']}").status_code == 204
+    assert client.delete(f"/medications/{medication['id']}").status_code == 404
 
 
 @pytest.mark.parametrize(

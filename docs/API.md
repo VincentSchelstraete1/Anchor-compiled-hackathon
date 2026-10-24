@@ -24,7 +24,7 @@ Response `200`:
 
 ## Fictional demo data
 
-- `POST /demo/seed` → `200 { "seeded": boolean, "people": number, "memories": number, "events": number }`.
+- `POST /demo/seed` → `200 { "seeded": boolean, "people": number, "memories": number, "events": number, "medications": number }`.
 - Adds the clearly labeled fictional Margaret demonstration dataset using the normal people, memory, and event tables.
 - The operation is idempotent. Repeated calls return `seeded: false` and do not create duplicates.
 - Fresh empty databases receive the same seed during initialization. Databases containing user-created people are never seeded automatically.
@@ -86,6 +86,37 @@ interface Memory {
 ```ts
 type MemoryCreate = Omit<Memory, "id" | "created_at">;
 type MemoryUpdate = Partial<MemoryCreate>;
+```
+
+## Medications
+
+```ts
+interface Medication {
+  id: number;
+  person_id: number;
+  name: string;
+  purpose: string;
+  dosage: string;
+  frequency: string;
+  location: string;
+  refill_date: string | null;
+  notes: string;
+  active: boolean;
+  created_at: string;
+}
+```
+
+`name` and `dosage` have a 120-character maximum; `frequency` has a 240-character maximum. `purpose` and `location` have a 500-character maximum. `notes` has a 2,000-character maximum. `refill_date` is an ISO 8601 calendar date (`YYYY-MM-DD`) or `null`. Medication details are caregiver-entered records and must not be treated as medical advice.
+
+- `GET /medications?person_id={id}&active={true|false}` → `200 { "items": Medication[] }`, active first and earliest refill first.
+- `POST /medications` with `MedicationCreate` → `201 Medication`.
+- `GET /medications/{medication_id}` → `200 Medication`.
+- `PATCH /medications/{medication_id}` with at least one `MedicationUpdate` field → `200 Medication`.
+- `DELETE /medications/{medication_id}` → `204`.
+
+```ts
+type MedicationCreate = Omit<Medication, "id" | "created_at">;
+type MedicationUpdate = Partial<MedicationCreate>;
 ```
 
 ## Events and reminders

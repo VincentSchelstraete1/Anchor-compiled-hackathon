@@ -31,6 +31,9 @@ from app.schemas import (
     HandoffAnswer,
     HandoffCreate,
     HandoffStatus,
+    Medication,
+    MedicationCreate,
+    MedicationUpdate,
     Memory,
     MemoryCreate,
     MemoryUpdate,
@@ -156,11 +159,15 @@ def create_app(
         events = db.execute(
             "SELECT COUNT(*) FROM events WHERE description LIKE 'Fictional demo —%'"
         ).fetchone()[0]
+        medications = db.execute(
+            "SELECT COUNT(*) FROM medications WHERE purpose LIKE 'Fictional demo —%'"
+        ).fetchone()[0]
         return DemoSeedResult(
             seeded=seeded,
             people=people,
             memories=memories,
             events=events,
+            medications=medications,
         )
 
     @application.get("/people")
@@ -306,6 +313,102 @@ def create_app(
         cursor = db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         if cursor.rowcount == 0:
             raise _not_found("Memory")
+        db.commit()
+        return Response(status_code=204)
+
+    @application.get("/medications")
+    def list_medications(
+        person_id: int | None = Query(default=None, gt=0),
+        active: bool | None = None,
+        db: sqlite3.Connection = Depends(database),
+    ) -> dict[str, list[Medication]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if person_id is not None:
+            clauses.append("person_id = ?")
+            params.append(person_id)
+        if active is not None:
+            clauses.append("active = ?")
+            params.append(int(active))
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = db.execute(
+            f"""SELECT * FROM medications{where}
+            ORDER BY active DESC, refill_date IS NULL, refill_date, name, id""",
+            params,
+        ).fetchall()
+        return {"items": [Medication(**_row(row)) for row in rows]}
+
+    @application.post("/medications", response_model=Medication, status_code=201)
+    def create_medication(
+        payload: MedicationCreate,
+        db: sqlite3.Connection = Depends(database),
+    ) -> Medication:
+        _person_exists(db, payload.person_id)
+        values = payload.model_dump(mode="json")
+        cursor = db.execute(
+            """INSERT INTO medications(
+                person_id, name, purpose, dosage, frequency, location,
+                refill_date, notes, active, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                values["person_id"],
+                values["name"],
+                values["purpose"],
+                values["dosage"],
+                values["frequency"],
+                values["location"],
+                values["refill_date"],
+                values["notes"],
+                int(values["active"]),
+                utc_text(),
+            ),
+        )
+        db.commit()
+        row = db.execute("SELECT * FROM medications WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        return Medication(**_row(row))
+
+    @application.get("/medications/{medication_id}", response_model=Medication)
+    def get_medication(
+        medication_id: int,
+        db: sqlite3.Connection = Depends(database),
+    ) -> Medication:
+        row = db.execute("SELECT * FROM medications WHERE id = ?", (medication_id,)).fetchone()
+        if row is None:
+            raise _not_found("Medication")
+        return Medication(**_row(row))
+
+    @application.patch("/medications/{medication_id}", response_model=Medication)
+    def update_medication(
+        medication_id: int,
+        payload: MedicationUpdate,
+        db: sqlite3.Connection = Depends(database),
+    ) -> Medication:
+        if (
+            db.execute("SELECT 1 FROM medications WHERE id = ?", (medication_id,)).fetchone()
+            is None
+        ):
+            raise _not_found("Medication")
+        values = payload.model_dump(exclude_unset=True, mode="json")
+        _person_exists(db, values.get("person_id"))
+        if "active" in values:
+            values["active"] = int(values["active"])
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        db.execute(
+            f"UPDATE medications SET {assignments} WHERE id = ?",
+            (*values.values(), medication_id),
+        )
+        db.commit()
+        row = db.execute("SELECT * FROM medications WHERE id = ?", (medication_id,)).fetchone()
+        return Medication(**_row(row))
+
+    @application.delete("/medications/{medication_id}", status_code=204)
+    def delete_medication(
+        medication_id: int,
+        db: sqlite3.Connection = Depends(database),
+    ) -> Response:
+        cursor = db.execute("DELETE FROM medications WHERE id = ?", (medication_id,))
+        if cursor.rowcount == 0:
+            raise _not_found("Medication")
         db.commit()
         return Response(status_code=204)
 

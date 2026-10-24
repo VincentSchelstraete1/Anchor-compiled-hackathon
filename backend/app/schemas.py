@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, model_validator
@@ -76,6 +76,7 @@ class DemoSeedResult(StrictModel):
     people: int
     memories: int
     events: int
+    medications: int
 
 
 class MemoryFields(StrictModel):
@@ -106,6 +107,57 @@ class MemoryUpdate(StrictModel):
 
 
 class Memory(MemoryFields):
+    id: int
+    created_at: str
+
+
+class MedicationFields(StrictModel):
+    person_id: int = Field(gt=0)
+    name: Text = Field(min_length=1, max_length=120)
+    purpose: Text = Field(max_length=500)
+    dosage: Text = Field(min_length=1, max_length=120)
+    frequency: Text = Field(min_length=1, max_length=240)
+    location: Text = Field(min_length=1, max_length=500)
+    refill_date: date | None = None
+    notes: Text = Field(max_length=2000)
+    active: bool = True
+
+
+class MedicationCreate(MedicationFields):
+    pass
+
+
+class MedicationUpdate(StrictModel):
+    person_id: int | None = Field(default=None, gt=0)
+    name: Text | None = Field(default=None, min_length=1, max_length=120)
+    purpose: Text | None = Field(default=None, max_length=500)
+    dosage: Text | None = Field(default=None, min_length=1, max_length=120)
+    frequency: Text | None = Field(default=None, min_length=1, max_length=240)
+    location: Text | None = Field(default=None, min_length=1, max_length=500)
+    refill_date: date | None = None
+    notes: Text | None = Field(default=None, max_length=2000)
+    active: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self) -> "MedicationUpdate":
+        if not self.model_fields_set:
+            raise ValueError("at least one field is required")
+        for field in (
+            "person_id",
+            "name",
+            "purpose",
+            "dosage",
+            "frequency",
+            "location",
+            "notes",
+            "active",
+        ):
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"{field} cannot be null")
+        return self
+
+
+class Medication(MedicationFields):
     id: int
     created_at: str
 
