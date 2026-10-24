@@ -42,13 +42,20 @@ const json = (value: unknown): RequestInit => ({ body: JSON.stringify(value) });
 export const caregiverApi = {
   people: {
     list: () => request<ListResponse<Person>>("/people"),
+    get: (id: number) => request<Person>(`/people/${id}`),
     create: (data: PersonCreate) => request<Person>("/people", { method: "POST", ...json(data) }),
     update: (id: number, data: PersonUpdate) =>
       request<Person>(`/people/${id}`, { method: "PATCH", ...json(data) }),
     remove: (id: number) => request<void>(`/people/${id}`, { method: "DELETE" }),
   },
   memories: {
-    list: () => request<ListResponse<Memory>>("/memories"),
+    list: (filters?: { person_id?: number; category?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.person_id) params.set("person_id", String(filters.person_id));
+      if (filters?.category) params.set("category", filters.category);
+      const query = params.size > 0 ? `?${params.toString()}` : "";
+      return request<ListResponse<Memory>>(`/memories${query}`);
+    },
     create: (data: MemoryCreate) => request<Memory>("/memories", { method: "POST", ...json(data) }),
     update: (id: number, data: MemoryUpdate) =>
       request<Memory>(`/memories/${id}`, { method: "PATCH", ...json(data) }),

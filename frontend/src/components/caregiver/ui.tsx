@@ -16,9 +16,9 @@ export function PageHeader({ eyebrow, title, description, action }: {
   return (
     <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
       <div>
-        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">{eyebrow}</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h1>
-        <p className="mt-2 max-w-2xl text-muted-foreground">{description}</p>
+        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#b9684f]">{eyebrow}</p>
+        <h1 className="mt-2 font-serif text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h1>
+        <p className="mt-2 max-w-2xl leading-6 text-muted-foreground">{description}</p>
       </div>
       {action}
     </header>
@@ -26,7 +26,7 @@ export function PageHeader({ eyebrow, title, description, action }: {
 }
 
 export function Surface({ children, className }: { children: ReactNode; className?: string }) {
-  return <section className={cn("rounded-2xl border bg-card p-5 shadow-sm sm:p-6", className)}>{children}</section>;
+  return <section className={cn("rounded-[1.25rem] border bg-card p-5 shadow-sm sm:p-6", className)}>{children}</section>;
 }
 
 export function LoadingState({ label = "Loading" }: { label?: string }) {
@@ -62,7 +62,7 @@ export function EmptyState({ icon, title, description, action }: {
   return (
     <div className="flex min-h-56 flex-col items-center justify-center rounded-xl border border-dashed bg-muted/30 p-8 text-center">
       <div className="mb-4 rounded-full bg-secondary p-3 text-primary">{icon}</div>
-      <h2 className="font-semibold">{title}</h2>
+      <h2 className="font-serif text-lg font-semibold">{title}</h2>
       <p className="mt-1 max-w-md text-sm text-muted-foreground">{description}</p>
       {action && <div className="mt-5">{action}</div>}
     </div>
@@ -98,10 +98,10 @@ export function Modal({ title, description, children, onClose }: {
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-foreground/35 p-4 backdrop-blur-sm" role="presentation">
       <div className="flex min-h-full items-center justify-center">
-        <section className="w-full max-w-xl rounded-2xl border bg-background p-6 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+        <section className="w-full max-w-xl rounded-[1.5rem] border bg-[#fbf8f0] p-6 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 id="dialog-title" className="text-xl font-semibold">{title}</h2>
+              <h2 id="dialog-title" className="font-serif text-2xl font-semibold">{title}</h2>
               <p className="mt-1 text-sm text-muted-foreground">{description}</p>
             </div>
             <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close dialog">Close</Button>
