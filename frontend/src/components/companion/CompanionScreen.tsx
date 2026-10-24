@@ -24,7 +24,7 @@ import { stepOffer, type HandoffOffer } from "./logic/consent";
 import { homeNarrative, pickHomeMemory, timeOfDay } from "./logic/home-context";
 import { isAcknowledgement, reminderSpeech } from "./logic/reminders";
 import { selectScene } from "./logic/scene-selector";
-import { cancelSpeech, speak, synthesisSupported, type SpeakResult } from "./speech";
+import { cancelSpeech, speak, synthesisSupported, useVoiceSource, type SpeakResult } from "./speech";
 import { useNow } from "./useNow";
 import { useVoiceInput, type TranscriptSource } from "./useVoiceInput";
 import type { ConversationContext } from "@/lib/api/types";
@@ -38,6 +38,7 @@ const FAILURE_LINE = "I'm having trouble reaching my notes right now. Please try
 
 export function CompanionScreen() {
   const now = useNow();
+  const voiceSource = useVoiceSource();
   const [context, setContext] = useState<ConversationContext | null>(null);
   const [offline, setOffline] = useState(false);
   const [ambient, dispatch] = useReducer(ambientReducer, initialAmbient);
@@ -402,12 +403,13 @@ export function CompanionScreen() {
           onInterrupt={interrupt}
           onTyped={(text) => void handleUtterance(text)}
         />
-        {offline || !voiceUnlocked ? (
-          <p className="text-lg text-[var(--a-muted)]">
-            {offline ? "Showing sample content while Anchor's notes are unavailable. " : ""}
-            {!voiceUnlocked ? "Press any key or tap once to turn on spoken reminders." : ""}
-          </p>
-        ) : null}
+        <p className="text-lg text-[var(--a-muted)]" data-testid="voice-disclosure">
+          {voiceSource === "ai"
+            ? "Anchor's voice is AI-generated. "
+            : "Anchor's voice is computer-generated (the AI voice is unavailable, so your browser's voice is used). "}
+          {offline ? "Showing sample content while Anchor's notes are unavailable. " : ""}
+          {!voiceUnlocked ? "Press any key or tap once to turn on spoken replies." : ""}
+        </p>
       </div>
       <ReminderManager people={people} isReady={isReady} canSpeak={canSpeak} present={presentReminder} />
       <CaregiverResponseListener people={people} isReady={isReady} canSpeak={canSpeak} announce={announceReply} onDelivered={() => void refresh()} />

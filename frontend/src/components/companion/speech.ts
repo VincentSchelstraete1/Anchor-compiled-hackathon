@@ -1,4 +1,8 @@
-// Thin wrappers over the browser Speech APIs. Nothing here logs spoken or heard text.
+import { useSyncExternalStore } from "react";
+import { fetchSpeechAudio } from "./companion-api";
+import { createVoiceOutput, type PlayResult, type Player, type SpeakResult, type VoiceSource } from "./logic/voice-output";
+
+// Thin wrappers over speech input (browser) and output (AI voice with browser fallback). Nothing here logs spoken or heard text.
 
 interface RecognitionAlternative { transcript: string }
 interface RecognitionResult { readonly length: number; isFinal: boolean; [index: number]: RecognitionAlternative }
@@ -48,16 +52,10 @@ export function synthesisSupported(): boolean {
   return typeof window !== "undefined" && "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
 }
 
-export type SpeakResult = "completed" | "interrupted" | "blocked" | "unsupported";
+export type { SpeakResult, VoiceSource } from "./logic/voice-output";
 
 // Chrome can garbage-collect an utterance mid-speech and never fire `end`; keep a reference.
 const live = new Set<SpeechSynthesisUtterance>();
-let generation = 0;
-
-export function cancelSpeech(): void {
-  generation++;
-  if (synthesisSupported()) window.speechSynthesis.cancel();
-}
 
 function pickVoice(lang: string): SpeechSynthesisVoice | null {
   const voices = window.speechSynthesis.getVoices();
@@ -72,11 +70,9 @@ function sentences(text: string): string[] {
   return text.match(/[^.!?]+[.!?]*\s*/g)?.map((s) => s.trim()).filter(Boolean) ?? [text];
 }
 
-/** Speaks `text`, replacing anything already being said (speech never overlaps). */
-export async function speak(text: string): Promise<SpeakResult> {
+async function speakWithBrowser(text: string, isCurrent: () => boolean): Promise<SpeakResult> {
   if (!synthesisSupported()) return "unsupported";
   const synth = window.speechSynthesis;
-  const mine = ++generation;
   synth.cancel();
   const lang = navigator.language || "en-US";
   const voice = pickVoice(lang);
@@ -98,7 +94,77 @@ export async function speak(text: string): Promise<SpeakResult> {
       synth.speak(utterance);
     });
     if (result === "blocked") return "blocked";
-    if (result === "interrupted" || mine !== generation) return "interrupted";
+    if (result === "interrupted" || !isCurrent()) return "interrupted";
   }
   return "completed";
+}
+
+/** One shared <audio> element's worth of state: starting a clip always stops the previous one. */
+function createAudioPlayer(): Player {
+  let element: HTMLAudioElement | null = null;
+  let url: string | null = null;
+  let settle: ((result: PlayResult) => void) | null = null;
+
+  const cleanup = () => {
+    if (element) {
+      element.onended = null;
+      element.onerror = null;
+      element.pause();
+      element.removeAttribute("src");
+      element.load();
+      element = null;
+    }
+    if (url) {
+      URL.revokeObjectURL(url);
+      url = null;
+    }
+  };
+  const stop = () => {
+    const pending = settle;
+    settle = null;
+    cleanup();
+    pending?.("interrupted");
+  };
+
+  return {
+    stop,
+    play(audio) {
+      stop();
+      return new Promise<PlayResult>((resolve) => {
+        settle = resolve;
+        url = URL.createObjectURL(audio);
+        const el = new Audio(url);
+        element = el;
+        const done = (result: PlayResult) => {
+          if (settle !== resolve) return;
+          settle = null;
+          cleanup();
+          resolve(result);
+        };
+        el.onended = () => done("completed");
+        el.onerror = () => done("failed");
+        el.play().catch((e: unknown) => done((e as { name?: string })?.name === "NotAllowedError" ? "blocked" : "failed"));
+      });
+    },
+  };
+}
+
+const output = createVoiceOutput({
+  fetchAudio: fetchSpeechAudio,
+  player: createAudioPlayer(),
+  speakBrowser: speakWithBrowser,
+  cancelBrowser: () => {
+    if (synthesisSupported()) window.speechSynthesis.cancel();
+  },
+  now: () => Date.now(),
+});
+
+/** Stops both the AI-voice audio (and any request for it) and browser speech. */
+export const cancelSpeech = output.cancel;
+/** Speaks `text` with the AI voice, falling back to the browser voice. New speech replaces old; never overlaps. */
+export const speak = output.speak;
+
+/** Which voice is in use, for the on-screen disclosure. Server render and hydration always see "ai". */
+export function useVoiceSource(): VoiceSource {
+  return useSyncExternalStore(output.subscribe, output.getSource, () => "ai" as const);
 }
