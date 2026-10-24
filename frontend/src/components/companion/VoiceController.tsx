@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { getRecognitionCtor, type Recognition } from "./speech";
 import { VoiceOrb, type Phase } from "./VoiceOrb";
 
@@ -21,6 +21,13 @@ const ERROR_MESSAGES: Record<string, string> = {
   "no-speech": "I didn't hear anything. Please try again.",
 };
 
+const noopSubscribe = () => () => {};
+
+/** Server and hydration assume support (no hint rendered); the client then re-checks the real browser. */
+function useRecognitionSupported(): boolean {
+  return useSyncExternalStore(noopSubscribe, () => getRecognitionCtor() !== null, () => true);
+}
+
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
@@ -28,7 +35,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 
 export function VoiceController({ phase, onListenStart, onListenEnd, onInterim, onUtterance, onNotice }: Props) {
   const [typed, setTyped] = useState("");
-  const [supported] = useState(() => getRecognitionCtor() !== null);
+  const supported = useRecognitionSupported();
   const recognition = useRef<Recognition | null>(null);
   const holding = useRef(false);
   const latest = useRef({ phase, onListenStart, onListenEnd, onInterim, onUtterance, onNotice });
