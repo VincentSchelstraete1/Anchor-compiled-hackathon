@@ -404,11 +404,9 @@ export function CompanionScreen() {
           onTyped={(text) => void handleUtterance(text)}
         />
         <p className="text-lg text-[var(--a-muted)]" data-testid="voice-disclosure">
-          {voiceSource === "ai"
-            ? "Anchor's voice is AI-generated. "
-            : "Anchor's voice is computer-generated (the AI voice is unavailable, so your browser's voice is used). "}
-          {offline ? "Showing sample content while Anchor's notes are unavailable. " : ""}
-          {!voiceUnlocked ? "Press any key or tap once to turn on spoken replies." : ""}
+          {voiceSource === "ai" ? "Anchor's voice is AI-generated. " : "Computer voice in use; the AI voice is unavailable. "}
+          {offline ? "Sample content shown. " : ""}
+          {!voiceUnlocked ? "Press any key to turn on sound." : ""}
         </p>
       </div>
       <ReminderManager people={people} isReady={isReady} canSpeak={canSpeak} present={presentReminder} />
