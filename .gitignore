@@ -1,0 +1,33 @@
+# macOS and editors
+.DS_Store
+.idea/
+.vscode/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+backend/anchor.db
+backend/*.db-journal
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+
+# User-generated local assets
+backend/uploads/

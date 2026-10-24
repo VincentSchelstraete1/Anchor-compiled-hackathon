@@ -1,0 +1,24 @@
+[project]
+name = "anchor-backend"
+version = "0.1.0"
+description = "FastAPI backend for Anchor"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.118,<1.0",
+  "uvicorn[standard]>=0.37,<1.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28,<1.0",
+  "pytest>=8.4,<10.0",
+  "ruff>=0.14,<1.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
