@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
@@ -62,6 +63,10 @@ def _person_exists(db: sqlite3.Connection, person_id: int | None) -> None:
 
 def _iso(value: datetime) -> str:
     return utc_text(value)
+
+
+def _normalized_question(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
 
 
 def create_app(database_path: Path | str = DATABASE_PATH, *, seed: bool = True) -> FastAPI:
@@ -397,6 +402,11 @@ def create_app(database_path: Path | str = DATABASE_PATH, *, seed: bool = True) 
             "INSERT INTO conversation_messages(role, content, created_at) VALUES ('assistant', ?, ?)",
             (result.content, utc_text()),
         )
+        db.execute(
+            """DELETE FROM conversation_messages WHERE id NOT IN (
+                SELECT id FROM conversation_messages ORDER BY id DESC LIMIT 50
+            )"""
+        )
         db.commit()
         row = db.execute(
             "SELECT * FROM conversation_messages WHERE id = ?", (cursor.lastrowid,)
@@ -427,6 +437,28 @@ def create_app(database_path: Path | str = DATABASE_PATH, *, seed: bool = True) 
         payload: HandoffCreate, db: sqlite3.Connection = Depends(database)
     ) -> Handoff:
         _person_exists(db, payload.caregiver_person_id)
+        active = db.execute(
+            """SELECT * FROM handoffs WHERE caregiver_person_id = ?
+            AND status IN ('pending', 'answered') ORDER BY id DESC""",
+            (payload.caregiver_person_id,),
+        ).fetchall()
+        duplicate = next(
+            (
+                row
+                for row in active
+                if _normalized_question(row["question"]) == _normalized_question(payload.question)
+            ),
+            None,
+        )
+        if duplicate is not None:
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "conflict",
+                    "An active handoff already exists for this question",
+                    {"handoff_id": duplicate["id"]},
+                ),
+            )
         cursor = db.execute(
             """INSERT INTO handoffs(caregiver_person_id, question, status, response,
             created_at, answered_at, delivered_at) VALUES (?, ?, 'pending', NULL, ?, NULL, NULL)""",
