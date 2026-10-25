@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Anchor, BellRing, CalendarDays, CircleHelp, Heart, Home, Menu, Pill, Sparkles, SunMedium, Users, X } from "lucide-react";
+import { Anchor, BellRing, CalendarDays, CircleHelp, Heart, Home, LifeBuoy, Menu, Pill, Sparkles, SunMedium, Users, X } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ const navigation = [
   { label: "Schedule", href: "/caregiver/schedule", icon: CalendarDays },
   { label: "Check-ins", href: "/caregiver/settings", icon: BellRing },
   { label: "Questions", href: "/caregiver/questions", icon: CircleHelp },
+  { label: "Assistance", href: "/caregiver/assistance", icon: LifeBuoy },
 ];
 
 export function DashboardShell({ children }: { children: ReactNode }) {

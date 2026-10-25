@@ -1,4 +1,5 @@
 import type {
+  AssistanceRequest,
   CheckInSettings,
   CheckInSettingsUpdate,
   Event,
@@ -92,5 +93,9 @@ export const caregiverApi = {
     list: () => request<ListResponse<Handoff>>("/handoffs"),
     answer: (id: number, data: HandoffAnswer) =>
       request<Handoff>(`/handoffs/${id}/answer`, { method: "POST", ...json(data) }),
+  },
+  assistanceRequests: {
+    list: () => request<ListResponse<AssistanceRequest>>("/assistance-requests"),
+    get: (id: number) => request<AssistanceRequest>(`/assistance-requests/${id}`),
   },
 };
