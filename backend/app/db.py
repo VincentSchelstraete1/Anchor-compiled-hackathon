@@ -28,7 +28,20 @@ CREATE TABLE IF NOT EXISTS events (
     start_time TEXT NOT NULL,
     person_id INTEGER REFERENCES people(id) ON DELETE RESTRICT,
     reminder_minutes INTEGER NOT NULL,
+    reminder_enabled INTEGER NOT NULL DEFAULT 1 CHECK (reminder_enabled IN (0, 1)),
     status TEXT NOT NULL CHECK (status IN ('scheduled', 'completed', 'cancelled'))
+);
+CREATE TABLE IF NOT EXISTS check_in_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    proactive_enabled INTEGER NOT NULL CHECK (proactive_enabled IN (0, 1)),
+    morning_time TEXT NOT NULL,
+    afternoon_time TEXT NOT NULL,
+    evening_time TEXT NOT NULL,
+    quiet_hours_start TEXT NOT NULL,
+    quiet_hours_end TEXT NOT NULL,
+    reminder_lead_minutes INTEGER NOT NULL,
+    spoken_reminders_enabled INTEGER NOT NULL CHECK (spoken_reminders_enabled IN (0, 1)),
+    updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS medications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +108,21 @@ def initialize_database(path: Path | str = DATABASE_PATH, *, seed: bool = True) 
     connection = get_connection(path)
     try:
         connection.executescript(SCHEMA)
+        event_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(events)").fetchall()
+        }
+        if "reminder_enabled" not in event_columns:
+            connection.execute(
+                "ALTER TABLE events ADD COLUMN reminder_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        connection.execute(
+            """INSERT OR IGNORE INTO check_in_settings(
+                id, proactive_enabled, morning_time, afternoon_time, evening_time,
+                quiet_hours_start, quiet_hours_end, reminder_lead_minutes,
+                spoken_reminders_enabled, updated_at
+            ) VALUES (1, 1, '09:00', '14:00', '19:00', '21:00', '07:00', 30, 1, ?)""",
+            (utc_text(),),
+        )
         if seed and connection.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
             seed_demo(connection)
         connection.commit()
@@ -105,7 +133,7 @@ def initialize_database(path: Path | str = DATABASE_PATH, *, seed: bool = True) 
 def seed_demo(connection: sqlite3.Connection) -> bool:
     seed_key = "margaret-fictional-v1"
     if connection.execute("SELECT 1 FROM demo_seeds WHERE key = ?", (seed_key,)).fetchone():
-        return _seed_demo_medications(connection)
+        return _seed_demo_medications(connection) | _seed_demo_family_expansion(connection)
 
     people: dict[str, int] = {}
     for name, relationship, description in (
@@ -249,6 +277,7 @@ def seed_demo(connection: sqlite3.Connection) -> bool:
         (seed_key, created_at),
     )
     _seed_demo_medications(connection, people["Margaret"])
+    _seed_demo_family_expansion(connection, people["Margaret"])
     return True
 
 
@@ -315,6 +344,73 @@ def _seed_demo_medications(connection: sqlite3.Connection, margaret_id: int | No
             )
             for name, purpose, dosage, frequency, location, refill_date, notes in medications
         ],
+    )
+    connection.execute(
+        "INSERT INTO demo_seeds(key, created_at) VALUES (?, ?)",
+        (seed_key, created_at),
+    )
+    return True
+
+
+def _seed_demo_family_expansion(
+    connection: sqlite3.Connection, margaret_id: int | None = None
+) -> bool:
+    seed_key = "margaret-fictional-family-v2"
+    if connection.execute("SELECT 1 FROM demo_seeds WHERE key = ?", (seed_key,)).fetchone():
+        return False
+    if margaret_id is None:
+        row = connection.execute(
+            """SELECT id FROM people
+            WHERE name = 'Margaret' AND description LIKE 'Fictional demo —%' ORDER BY id LIMIT 1"""
+        ).fetchone()
+        if row is None:
+            return False
+        margaret_id = int(row["id"])
+
+    daniel = connection.execute(
+        """INSERT INTO people(name, relationship, description, photo_url)
+        VALUES (?, ?, ?, ?)""",
+        (
+            "Daniel",
+            "Son",
+            "Fictional demo — Margaret's son and a caregiver-approved contact who calls on Sunday evenings.",
+            None,
+        ),
+    )
+    daniel_id = int(daniel.lastrowid)
+    created_at = utc_text()
+    connection.executemany(
+        """INSERT INTO memories(person_id, title, content, category, created_at)
+        VALUES (?, ?, ?, ?, ?)""",
+        (
+            (
+                margaret_id,
+                "Margaret's favorite music",
+                "Margaret especially enjoys Mozart piano concertos and Vivaldi's Four Seasons.",
+                "Demo · Important preference",
+                created_at,
+            ),
+            (
+                daniel_id,
+                "Daniel's Sunday calls",
+                "Daniel is Margaret's son. He usually calls on Sunday evenings and likes hearing how the garden is doing.",
+                "Demo · Family",
+                created_at,
+            ),
+        ),
+    )
+    connection.execute(
+        """INSERT INTO events(
+            title, description, start_time, person_id, reminder_minutes,
+            reminder_enabled, status
+        ) VALUES (?, ?, ?, ?, ?, 1, 'scheduled')""",
+        (
+            "Sunday call with Daniel",
+            "Fictional demo — Daniel is expected to call Margaret on Sunday evening.",
+            utc_text(datetime.now(UTC) + timedelta(days=5)),
+            daniel_id,
+            15,
+        ),
     )
     connection.execute(
         "INSERT INTO demo_seeds(key, created_at) VALUES (?, ?)",

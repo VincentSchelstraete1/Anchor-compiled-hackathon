@@ -20,6 +20,8 @@ from app.db import get_connection, initialize_database, seed_demo, utc_text
 from app.schemas import (
     ChatRequest,
     ChatResponse,
+    CheckInSettings,
+    CheckInSettingsUpdate,
     ConversationContext,
     ConversationMessage,
     DemoSeedResult,
@@ -444,13 +446,14 @@ def create_app(
         _person_exists(db, payload.person_id)
         cursor = db.execute(
             """INSERT INTO events(title, description, start_time, person_id,
-            reminder_minutes, status) VALUES (?, ?, ?, ?, ?, ?)""",
+            reminder_minutes, reminder_enabled, status) VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 payload.title,
                 payload.description,
                 _iso(payload.start_time),
                 payload.person_id,
                 payload.reminder_minutes,
+                int(payload.reminder_enabled),
                 payload.status,
             ),
         )
@@ -475,6 +478,8 @@ def create_app(
         _person_exists(db, values.get("person_id"))
         if isinstance(values.get("start_time"), datetime):
             values["start_time"] = _iso(values["start_time"])
+        if "reminder_enabled" in values:
+            values["reminder_enabled"] = int(values["reminder_enabled"])
         assignments = ", ".join(f"{key} = ?" for key in values)
         db.execute(
             f"UPDATE events SET {assignments} WHERE id = ?",
@@ -499,8 +504,15 @@ def create_app(
         current = at or datetime.now(UTC)
         if current.tzinfo is None:
             raise HTTPException(422, detail=_error("validation_error", "Timestamp needs an offset"))
+        settings = db.execute(
+            "SELECT spoken_reminders_enabled FROM check_in_settings WHERE id = 1"
+        ).fetchone()
+        if settings is not None and not settings["spoken_reminders_enabled"]:
+            return {"items": []}
         rows = db.execute(
-            "SELECT * FROM events WHERE status = 'scheduled' ORDER BY start_time, id"
+            """SELECT * FROM events
+            WHERE status = 'scheduled' AND reminder_enabled = 1
+            ORDER BY start_time, id"""
         ).fetchall()
         due = []
         for row in rows:
@@ -509,6 +521,45 @@ def create_app(
             if start - timedelta(minutes=item["reminder_minutes"]) <= current < start:
                 due.append(Event(**item))
         return {"items": due}
+
+    @application.get("/settings/check-ins", response_model=CheckInSettings)
+    def get_check_in_settings(
+        db: sqlite3.Connection = Depends(database),
+    ) -> CheckInSettings:
+        row = db.execute("SELECT * FROM check_in_settings WHERE id = 1").fetchone()
+        values = _row(row)
+        values.pop("id")
+        return CheckInSettings(**values)
+
+    @application.put("/settings/check-ins", response_model=CheckInSettings)
+    def update_check_in_settings(
+        payload: CheckInSettingsUpdate,
+        db: sqlite3.Connection = Depends(database),
+    ) -> CheckInSettings:
+        values = payload.model_dump()
+        db.execute(
+            """UPDATE check_in_settings SET
+                proactive_enabled = ?, morning_time = ?, afternoon_time = ?,
+                evening_time = ?, quiet_hours_start = ?, quiet_hours_end = ?,
+                reminder_lead_minutes = ?, spoken_reminders_enabled = ?, updated_at = ?
+            WHERE id = 1""",
+            (
+                int(values["proactive_enabled"]),
+                values["morning_time"],
+                values["afternoon_time"],
+                values["evening_time"],
+                values["quiet_hours_start"],
+                values["quiet_hours_end"],
+                values["reminder_lead_minutes"],
+                int(values["spoken_reminders_enabled"]),
+                utc_text(),
+            ),
+        )
+        db.commit()
+        row = db.execute("SELECT * FROM check_in_settings WHERE id = 1").fetchone()
+        saved = _row(row)
+        saved.pop("id")
+        return CheckInSettings(**saved)
 
     @application.get("/conversation/messages")
     def conversation_messages(

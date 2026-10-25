@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Anchor, CalendarDays, CircleHelp, Heart, Home, Menu, Pill, Sparkles, SunMedium, Users, X } from "lucide-react";
+import { Anchor, BellRing, CalendarDays, CircleHelp, Heart, Home, Menu, Pill, Sparkles, SunMedium, Users, X } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ const navigation = [
   { label: "Routines", href: "/caregiver/routines", icon: SunMedium },
   { label: "Medicines", href: "/caregiver/medications", icon: Pill },
   { label: "Schedule", href: "/caregiver/schedule", icon: CalendarDays },
+  { label: "Check-ins", href: "/caregiver/settings", icon: BellRing },
   { label: "Questions", href: "/caregiver/questions", icon: CircleHelp },
 ];
 

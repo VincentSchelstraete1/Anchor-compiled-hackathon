@@ -131,23 +131,49 @@ interface Event {
   start_time: string;
   person_id: number | null;
   reminder_minutes: number;
+  reminder_enabled: boolean;
   status: EventStatus;
 }
 ```
 
-`title` has a 120-character maximum. `description` may be empty. `reminder_minutes` is an integer from 0 through 10,080. New events normally use `scheduled`.
+`title` has a 120-character maximum. `description` may be empty. `reminder_minutes` is an integer from 0 through 10,080. `reminder_enabled` defaults to `true` for compatibility with existing clients and records. New events normally use `scheduled`.
 
 - `GET /events?from={iso}&to={iso}&status={status}` → `200 { "items": Event[] }`, earliest `start_time` first. Filters are optional and combined.
 - `POST /events` with `EventCreate` → `201 Event`.
 - `GET /events/{event_id}` → `200 Event`.
 - `PATCH /events/{event_id}` with at least one `EventUpdate` field → `200 Event`.
 - `DELETE /events/{event_id}` → `204`.
-- `GET /reminders/due?at={iso}` → `200 { "items": Event[] }`. `at` defaults to server time. Returns scheduled events where `start_time - reminder_minutes <= at < start_time`; the companion suppresses duplicate speech during one browser session.
+- `GET /reminders/due?at={iso}` → `200 { "items": Event[] }`. `at` defaults to server time. Returns reminder-enabled scheduled events where `start_time - reminder_minutes <= at < start_time`. Returns no events when spoken reminders are disabled globally; the companion suppresses duplicate speech during one browser session.
 
 ```ts
 type EventCreate = Omit<Event, "id">;
 type EventUpdate = Partial<EventCreate>;
 ```
+
+## Proactive check-in settings
+
+```ts
+interface CheckInSettings {
+  proactive_enabled: boolean;
+  morning_time: string;
+  afternoon_time: string;
+  evening_time: string;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  reminder_lead_minutes: number;
+  spoken_reminders_enabled: boolean;
+  updated_at: string;
+}
+
+type CheckInSettingsUpdate = Omit<CheckInSettings, "updated_at">;
+```
+
+Clock values use 24-hour `HH:MM` text. `reminder_lead_minutes` is an integer from 0 through 10,080. The stored schedule is interpreted in the companion display device's local timezone.
+
+- `GET /settings/check-ins` → `200 CheckInSettings`.
+- `PUT /settings/check-ins` with every `CheckInSettingsUpdate` field → `200 CheckInSettings`.
+
+These endpoints persist caregiver intent. A proactive scheduling consumer is still required to initiate morning, afternoon, and evening check-ins and enforce quiet hours; this contract does not change the conversational or companion implementation.
 
 ## Conversation context and chat
 
