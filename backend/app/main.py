@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -17,11 +18,26 @@ from pydantic import BaseModel
 from app.assistant import answer_message
 from app.config import DATABASE_PATH, FRONTEND_ORIGINS, UPLOADS_PATH
 from app.db import get_connection, initialize_database, seed_demo, utc_text
+from app.reminders import (
+    create_demo_notification,
+    day_notifications,
+    due_notifications,
+    get_settings,
+    local_day_bounds,
+    update_notification_status,
+)
 from app.schemas import (
     ChatRequest,
     ChatResponse,
+    CheckIn,
+    CheckInCreate,
+    CheckInUpdate,
+    CompanionSettings,
+    CompanionSettingsUpdate,
     ConversationContext,
     ConversationMessage,
+    DailyBriefing,
+    DemoReminderCreate,
     DemoSeedResult,
     Event,
     EventCreate,
@@ -41,6 +57,7 @@ from app.schemas import (
     PersonCreate,
     PersonUpdate,
     PhotoUpload,
+    ReminderNotification,
     SpeechRequest,
 )
 from app.speech import SpeechUnavailableError, generate_speech
@@ -67,6 +84,12 @@ def _not_found(kind: str) -> HTTPException:
 
 def _row(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
+
+
+def _reminder(item: sqlite3.Row | dict[str, Any]) -> ReminderNotification:
+    return ReminderNotification(
+        **{field: item[field] for field in ReminderNotification.model_fields}
+    )
 
 
 def _person_exists(db: sqlite3.Connection, person_id: int | None) -> None:
@@ -512,6 +535,205 @@ def create_app(
                 due.append(Event(**item))
         return {"items": due}
 
+    @application.get("/companion/settings", response_model=CompanionSettings)
+    def companion_settings(
+        db: sqlite3.Connection = Depends(database),
+    ) -> CompanionSettings:
+        return CompanionSettings(**get_settings(db))
+
+    @application.put("/companion/settings", response_model=CompanionSettings)
+    def update_companion_settings(
+        payload: CompanionSettingsUpdate,
+        db: sqlite3.Connection = Depends(database),
+    ) -> CompanionSettings:
+        try:
+            ZoneInfo(payload.timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise HTTPException(
+                422, detail=_error("validation_error", "Unknown IANA timezone")
+            ) from exc
+        db.execute(
+            """UPDATE companion_settings SET timezone = ?, quiet_hours_start = ?,
+            quiet_hours_end = ? WHERE id = 1""",
+            (payload.timezone, payload.quiet_hours_start, payload.quiet_hours_end),
+        )
+        db.commit()
+        return CompanionSettings(**get_settings(db))
+
+    @application.get("/check-ins")
+    def list_check_ins(
+        db: sqlite3.Connection = Depends(database),
+    ) -> dict[str, list[CheckIn]]:
+        rows = db.execute("SELECT * FROM check_ins ORDER BY time_of_day, id").fetchall()
+        return {"items": [CheckIn(**_row(row)) for row in rows]}
+
+    @application.post("/check-ins", response_model=CheckIn, status_code=201)
+    def create_check_in(
+        payload: CheckInCreate, db: sqlite3.Connection = Depends(database)
+    ) -> CheckIn:
+        cursor = db.execute(
+            """INSERT INTO check_ins(title, prompt, time_of_day, enabled, created_at)
+            VALUES (?, ?, ?, ?, ?)""",
+            (payload.title, payload.prompt, payload.time_of_day, payload.enabled, utc_text()),
+        )
+        db.commit()
+        row = db.execute("SELECT * FROM check_ins WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        return CheckIn(**_row(row))
+
+    @application.get("/check-ins/{check_in_id}", response_model=CheckIn)
+    def get_check_in(
+        check_in_id: int, db: sqlite3.Connection = Depends(database)
+    ) -> CheckIn:
+        row = db.execute("SELECT * FROM check_ins WHERE id = ?", (check_in_id,)).fetchone()
+        if row is None:
+            raise _not_found("Check-in")
+        return CheckIn(**_row(row))
+
+    @application.patch("/check-ins/{check_in_id}", response_model=CheckIn)
+    def update_check_in(
+        check_in_id: int,
+        payload: CheckInUpdate,
+        db: sqlite3.Connection = Depends(database),
+    ) -> CheckIn:
+        if db.execute("SELECT 1 FROM check_ins WHERE id = ?", (check_in_id,)).fetchone() is None:
+            raise _not_found("Check-in")
+        values = payload.model_dump(exclude_unset=True)
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        db.execute(
+            f"UPDATE check_ins SET {assignments} WHERE id = ?", (*values.values(), check_in_id)
+        )
+        db.commit()
+        row = db.execute("SELECT * FROM check_ins WHERE id = ?", (check_in_id,)).fetchone()
+        return CheckIn(**_row(row))
+
+    @application.delete("/check-ins/{check_in_id}", status_code=204)
+    def delete_check_in(
+        check_in_id: int, db: sqlite3.Connection = Depends(database)
+    ) -> Response:
+        cursor = db.execute("DELETE FROM check_ins WHERE id = ?", (check_in_id,))
+        if cursor.rowcount == 0:
+            raise _not_found("Check-in")
+        db.commit()
+        return Response(status_code=204)
+
+    @application.get("/reminder-notifications/due")
+    def due_notification_items(
+        at: datetime | None = None, db: sqlite3.Connection = Depends(database)
+    ) -> dict[str, list[ReminderNotification]]:
+        current = at or datetime.now(UTC)
+        if current.tzinfo is None:
+            raise HTTPException(422, detail=_error("validation_error", "Timestamp needs an offset"))
+        items = due_notifications(db, current.astimezone(UTC))
+        return {"items": [_reminder(item) for item in items]}
+
+    @application.get(
+        "/reminder-notifications/{notification_id}", response_model=ReminderNotification
+    )
+    def get_reminder_notification(
+        notification_id: int, db: sqlite3.Connection = Depends(database)
+    ) -> ReminderNotification:
+        row = db.execute(
+            "SELECT * FROM reminder_notifications WHERE id = ?", (notification_id,)
+        ).fetchone()
+        if row is None:
+            raise _not_found("Reminder notification")
+        return _reminder(row)
+
+    def notification_transition(
+        notification_id: int, action: Literal["delivered", "acknowledged"], db: sqlite3.Connection
+    ) -> ReminderNotification:
+        item = update_notification_status(db, notification_id, action, datetime.now(UTC))
+        if item is None:
+            raise _not_found("Reminder notification")
+        return _reminder(item)
+
+    @application.post(
+        "/reminder-notifications/{notification_id}/delivered",
+        response_model=ReminderNotification,
+    )
+    def mark_notification_delivered(
+        notification_id: int, db: sqlite3.Connection = Depends(database)
+    ) -> ReminderNotification:
+        return notification_transition(notification_id, "delivered", db)
+
+    @application.post(
+        "/reminder-notifications/{notification_id}/acknowledge",
+        response_model=ReminderNotification,
+    )
+    def acknowledge_notification(
+        notification_id: int, db: sqlite3.Connection = Depends(database)
+    ) -> ReminderNotification:
+        return notification_transition(notification_id, "acknowledged", db)
+
+    @application.get("/daily-briefing", response_model=DailyBriefing)
+    def daily_briefing(
+        at: datetime | None = None, db: sqlite3.Connection = Depends(database)
+    ) -> DailyBriefing:
+        current = at or datetime.now(UTC)
+        if current.tzinfo is None:
+            raise HTTPException(422, detail=_error("validation_error", "Timestamp needs an offset"))
+        current = current.astimezone(UTC)
+        settings = get_settings(db)
+        timezone = str(settings["timezone"])
+        start, end, local_date = local_day_bounds(current, timezone)
+        event_rows = db.execute(
+            """SELECT * FROM events WHERE status = 'scheduled' AND start_time >= ?
+            AND start_time < ? ORDER BY start_time, id""",
+            (_iso(max(start, current)), _iso(end)),
+        ).fetchall()
+        visitors = []
+        appointments = []
+        for row in event_rows:
+            searchable = f"{row['title']} {row['description']}".lower()
+            if row["person_id"] is not None and any(
+                word in searchable for word in ("visit", "visiting", "coming")
+            ):
+                visitors.append(Event(**_row(row)))
+            else:
+                appointments.append(Event(**_row(row)))
+        memory_rows = db.execute(
+            "SELECT * FROM memories ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+        routines = [
+            Memory(**_row(row))
+            for row in memory_rows
+            if row["category"].lower() in {"routine", "routines", "activity", "activities"}
+        ]
+        preferences = [
+            Memory(**_row(row))
+            for row in memory_rows
+            if row["category"].lower() in {"preference", "preferences", "favorite"}
+        ]
+        reminder_rows = day_notifications(db, current, start, end)
+        return DailyBriefing(
+            date=local_date.isoformat(),
+            timezone=timezone,
+            upcoming_appointments=appointments,
+            expected_visitors=visitors,
+            scheduled_routines=routines,
+            relevant_reminders=[_reminder(row) for row in reminder_rows],
+            preferences=preferences,
+        )
+
+    @application.post("/demo/reminders", response_model=ReminderNotification, status_code=201)
+    def trigger_demo_reminder(
+        payload: DemoReminderCreate, db: sqlite3.Connection = Depends(database)
+    ) -> ReminderNotification:
+        item = create_demo_notification(
+            db,
+            at=datetime.now(UTC),
+            kind=payload.kind,
+            title=payload.title,
+            message=payload.message,
+        )
+        return _reminder(item)
+
+    @application.delete("/demo/reminders", status_code=204)
+    def reset_demo_reminders(db: sqlite3.Connection = Depends(database)) -> Response:
+        db.execute("DELETE FROM reminder_notifications WHERE kind = 'demo'")
+        db.commit()
+        return Response(status_code=204)
+
     @application.get("/conversation/messages")
     def conversation_messages(
         limit: int = Query(default=12, ge=1, le=50),
@@ -579,6 +801,7 @@ def create_app(
             for row in db.execute("SELECT * FROM events ORDER BY start_time LIMIT 50").fetchall()
         ]
         handoffs = [_row(row) for row in db.execute("SELECT * FROM handoffs").fetchall()]
+        timezone = str(get_settings(db)["timezone"])
         result = answer_message(
             payload.message,
             people=people,
@@ -587,6 +810,7 @@ def create_app(
             events=events,
             handoffs=handoffs,
             history=[_row(row) for row in reversed(history_rows)],
+            timezone=timezone,
         )
         cursor = db.execute(
             "INSERT INTO conversation_messages(role, content, created_at) VALUES ('assistant', ?, ?)",

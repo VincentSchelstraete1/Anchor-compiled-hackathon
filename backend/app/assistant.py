@@ -5,6 +5,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.config import OPENAI_API_KEY, OPENAI_MODEL
 
@@ -174,6 +175,14 @@ QUESTION_FILLER_WORDS = {
     "where",
     "your",
 }
+DAILY_PLAN_PHRASES = {
+    "anything planned",
+    "happening today",
+    "plans today",
+    "should i do this afternoon",
+    "what is happening today",
+    "whats happening today",
+}
 
 
 @dataclass
@@ -193,6 +202,7 @@ def answer_message(
     events: list[dict[str, Any]],
     handoffs: list[dict[str, Any]],
     history: list[dict[str, Any]],
+    timezone: str = "UTC",
 ) -> AssistantResult:
     """Route safety first, personal facts to stored records, and ordinary chat to OpenAI."""
     rule_result = _safety_rule_answer(message)
@@ -218,6 +228,7 @@ def answer_message(
         events=events,
         handoffs=handoffs,
         history=history,
+        timezone=timezone,
     )
     if safe_result.grounded:
         medication_query = bool(set(_normalize(message).split()) & MEDICATION_WORDS) or (
@@ -229,7 +240,7 @@ def answer_message(
             else None
         )
         return natural or safe_result
-    return safe_result if safe_result.handoff_offered else _unknown_personal(message, people)
+    return safe_result if safe_result.content else _unknown_personal(message, people)
 
 
 def _safety_rule_answer(
@@ -286,6 +297,8 @@ def _is_personal_query(
 ) -> bool:
     normalized = _normalize(message)
     words = set(normalized.split())
+    if any(phrase in normalized for phrase in DAILY_PLAN_PHRASES):
+        return True
     if _resolve_person(message, people, history) is not None:
         return True
     if words & MEDICATION_WORDS or _medication_mentioned(normalized, medications) is not None:
@@ -359,11 +372,17 @@ def _grounded_answer(
     events: list[dict[str, Any]],
     handoffs: list[dict[str, Any]],
     history: list[dict[str, Any]],
+    timezone: str,
 ) -> AssistantResult:
     normalized = _normalize(message)
     words = set(normalized.split())
     if words and words <= {"hi", "hello", "hey"}:
         return AssistantResult("Hello. How can I help?", False, [], False)
+
+    if any(phrase in normalized for phrase in DAILY_PLAN_PHRASES):
+        return _daily_plan_answer(
+            people=people, memories=memories, events=events, timezone=timezone
+        )
 
     existing_handoff = next(
         (
@@ -465,6 +484,53 @@ def _grounded_answer(
         )
 
     return _unknown_personal(message, people)
+
+
+def _daily_plan_answer(
+    *,
+    people: list[dict[str, Any]],
+    memories: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    timezone: str,
+) -> AssistantResult:
+    zone = ZoneInfo(timezone)
+    today = datetime.now(UTC).astimezone(zone).date()
+    today_events = [
+        event
+        for event in events
+        if event["status"] == "scheduled"
+        and datetime.fromisoformat(event["start_time"]).astimezone(zone).date() == today
+    ]
+    today_events.sort(key=lambda event: (event["start_time"], event["id"]))
+    routines = [
+        memory
+        for memory in memories
+        if _normalize(memory["category"]) in {"routine", "routines", "activity", "activities"}
+    ]
+    details: list[str] = []
+    sources: list[dict[str, Any]] = []
+    for event in today_events[:3]:
+        person = _person_by_id(people, event["person_id"])
+        person_detail = f" with {person['name']}" if person else ""
+        local_time = datetime.fromisoformat(event["start_time"]).astimezone(zone)
+        details.append(f"{event['title']}{person_detail} at {local_time.strftime('%-I:%M %p')}")
+        sources.append({"type": "event", "id": event["id"]})
+        if person:
+            sources.append({"type": "person", "id": person["id"]})
+    if routines:
+        routine = routines[0]
+        details.append(f"your caregiver note also suggests: {routine['content']}")
+        sources.append({"type": "memory", "id": routine["id"]})
+    if not details:
+        return AssistantResult(
+            "I don't see anything caregiver-scheduled for today.", False, [], False
+        )
+    return AssistantResult(
+        "For today, I have " + "; ".join(details) + ".",
+        True,
+        sources,
+        False,
+    )
 
 
 def _asks_about_person(normalized: str, words: set[str], person: dict[str, Any]) -> bool:

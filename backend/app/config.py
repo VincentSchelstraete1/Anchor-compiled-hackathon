@@ -17,6 +17,7 @@ OPENAI_TTS_INSTRUCTIONS = os.getenv(
         "Never sound rushed, patronizing, overly dramatic, or alarmed."
     ),
 )
+ANCHOR_TIMEZONE = os.getenv("ANCHOR_TIMEZONE", "America/Los_Angeles")
 
 FRONTEND_ORIGINS = [
     origin.strip()

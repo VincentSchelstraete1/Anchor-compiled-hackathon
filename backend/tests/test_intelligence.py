@@ -360,6 +360,23 @@ def test_general_conversation_failure_uses_non_handoff_fallback(
     assert "I'm here with you" in response["message"]["content"]
 
 
+def test_today_question_uses_current_caregiver_schedule(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "")
+    app = create_app(tmp_path / "today.db", seed=False)
+    with TestClient(app) as client:
+        sarah = _person(client, "Sarah", "daughter")
+        scheduled = _event(client, sarah["id"], datetime.now(UTC) + timedelta(hours=1))
+        response = client.post("/chat", json={"message": "What's happening today?"}).json()
+
+    assert response["grounded"] is True
+    assert {source["id"] for source in response["sources"]} == {
+        sarah["id"],
+        scheduled["id"],
+    }
+    assert "For today" in response["message"]["content"]
+    assert "Sarah visits" in response["message"]["content"]
+
+
 def test_personal_facts_bypass_model_and_reflect_caregiver_updates(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -253,6 +253,88 @@ class SpeechRequest(StrictModel):
     text: Text = Field(min_length=1, max_length=4096)
 
 
+class CompanionSettings(StrictModel):
+    timezone: Text = Field(min_length=1, max_length=120)
+    quiet_hours_start: str | None
+    quiet_hours_end: str | None
+
+
+class CompanionSettingsUpdate(StrictModel):
+    timezone: Text = Field(min_length=1, max_length=120)
+    quiet_hours_start: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    quiet_hours_end: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+    @model_validator(mode="after")
+    def validate_quiet_hours(self) -> "CompanionSettingsUpdate":
+        if (self.quiet_hours_start is None) != (self.quiet_hours_end is None):
+            raise ValueError("quiet hours start and end must both be set or both be null")
+        if self.quiet_hours_start == self.quiet_hours_end and self.quiet_hours_start is not None:
+            raise ValueError("quiet hours start and end must differ")
+        return self
+
+
+class CheckInFields(StrictModel):
+    title: Text = Field(min_length=1, max_length=120)
+    prompt: Text = Field(min_length=1, max_length=2000)
+    time_of_day: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    enabled: bool = True
+
+
+class CheckInCreate(CheckInFields):
+    pass
+
+
+class CheckInUpdate(StrictModel):
+    title: Text | None = Field(default=None, min_length=1, max_length=120)
+    prompt: Text | None = Field(default=None, min_length=1, max_length=2000)
+    time_of_day: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self) -> "CheckInUpdate":
+        if not self.model_fields_set:
+            raise ValueError("at least one field is required")
+        if any(getattr(self, field) is None for field in self.model_fields_set):
+            raise ValueError("check-in fields cannot be null")
+        return self
+
+
+class CheckIn(CheckInFields):
+    id: int
+    created_at: str
+
+
+class ReminderNotification(StrictModel):
+    id: int
+    kind: Literal["event", "check_in", "demo"]
+    event_id: int | None
+    check_in_id: int | None
+    title: str
+    message: str
+    due_at: str
+    expires_at: str
+    status: Literal["pending", "delivered", "acknowledged"]
+    created_at: str
+    delivered_at: str | None
+    acknowledged_at: str | None
+
+
+class DemoReminderCreate(StrictModel):
+    kind: Literal["check_in", "appointment"]
+    title: Text | None = Field(default=None, min_length=1, max_length=120)
+    message: Text | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class DailyBriefing(StrictModel):
+    date: str
+    timezone: str
+    upcoming_appointments: list[Event]
+    expected_visitors: list[Event]
+    scheduled_routines: list[Memory]
+    relevant_reminders: list[ReminderNotification]
+    preferences: list[Memory]
+
+
 class Source(StrictModel):
     type: Literal["person", "memory", "event", "handoff", "medication"]
     id: int

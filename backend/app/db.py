@@ -3,7 +3,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from app.config import DATABASE_PATH
+from app.config import ANCHOR_TIMEZONE, DATABASE_PATH
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS people (
@@ -68,6 +68,37 @@ CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_time);
 CREATE INDEX IF NOT EXISTS idx_medications_person ON medications(person_id);
 CREATE INDEX IF NOT EXISTS idx_medications_refill ON medications(refill_date);
 CREATE INDEX IF NOT EXISTS idx_handoffs_status ON handoffs(status);
+CREATE TABLE IF NOT EXISTS companion_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    timezone TEXT NOT NULL,
+    quiet_hours_start TEXT,
+    quiet_hours_end TEXT
+);
+CREATE TABLE IF NOT EXISTS check_ins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    time_of_day TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reminder_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('event', 'check_in', 'demo')),
+    event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+    check_in_id INTEGER REFERENCES check_ins(id) ON DELETE CASCADE,
+    occurrence_key TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'acknowledged')),
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    acknowledged_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reminder_notifications_due
+ON reminder_notifications(status, due_at);
 """
 
 
@@ -95,8 +126,16 @@ def initialize_database(path: Path | str = DATABASE_PATH, *, seed: bool = True) 
     connection = get_connection(path)
     try:
         connection.executescript(SCHEMA)
-        if seed and connection.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
-            seed_demo(connection)
+        connection.execute(
+            """INSERT OR IGNORE INTO companion_settings(
+            id, timezone, quiet_hours_start, quiet_hours_end
+            ) VALUES (1, ?, NULL, NULL)""",
+            (ANCHOR_TIMEZONE,),
+        )
+        if seed:
+            if connection.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
+                seed_demo(connection)
+            _seed_default_check_in(connection)
         connection.commit()
     finally:
         connection.close()
@@ -255,7 +294,7 @@ def seed_demo(connection: sqlite3.Connection) -> bool:
 def _seed_demo_medications(connection: sqlite3.Connection, margaret_id: int | None = None) -> bool:
     seed_key = "margaret-fictional-medications-v1"
     if connection.execute("SELECT 1 FROM demo_seeds WHERE key = ?", (seed_key,)).fetchone():
-        return False
+        return _seed_default_check_in(connection)
     if margaret_id is None:
         row = connection.execute(
             """SELECT id FROM people
@@ -319,5 +358,23 @@ def _seed_demo_medications(connection: sqlite3.Connection, margaret_id: int | No
     connection.execute(
         "INSERT INTO demo_seeds(key, created_at) VALUES (?, ?)",
         (seed_key, created_at),
+    )
+    _seed_default_check_in(connection)
+    return True
+
+
+def _seed_default_check_in(connection: sqlite3.Connection) -> bool:
+    title = "Afternoon check-in"
+    if connection.execute("SELECT 1 FROM check_ins WHERE title = ?", (title,)).fetchone():
+        return False
+    connection.execute(
+        """INSERT INTO check_ins(title, prompt, time_of_day, enabled, created_at)
+        VALUES (?, ?, ?, 1, ?)""",
+        (
+            title,
+            "Good afternoon. How are you feeling, and is there anything you need?",
+            "15:00",
+            utc_text(),
+        ),
     )
     return True
