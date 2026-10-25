@@ -2,14 +2,26 @@ import json
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import OPENAI_API_KEY, OPENAI_MODEL
 
-FOLLOW_UP_WORDS = {"she", "he", "they", "them", "her", "him", "together"}
+FOLLOW_UP_WORDS = {
+    "she",
+    "he",
+    "they",
+    "them",
+    "her",
+    "him",
+    "together",
+    "that",
+    "this",
+    "it",
+    "remember",
+}
 EMERGENCY_PHRASES = {
     "cant breathe",
     "cannot breathe",
@@ -163,6 +175,22 @@ DAILY_PLAN_PHRASES = {
     "should i do this afternoon",
     "what is happening today",
     "whats happening today",
+    "what should i do today",
+}
+MEMORY_DIFFICULTY_PHRASES = {
+    "can t remember",
+    "cant remember",
+    "cannot remember",
+    "confused about",
+    "do not remember",
+    "don t remember",
+    "dont remember",
+    "having trouble remembering",
+}
+CONVERSATION_RECALL_PHRASES = {
+    "do you remember what we talked about",
+    "what did we talk about",
+    "what were we talking about",
 }
 
 
@@ -172,6 +200,7 @@ class AssistantResult:
     grounded: bool
     sources: list[dict[str, Any]]
     handoff_offered: bool
+    verified_facts: list[str] = field(default_factory=list)
 
 
 def answer_message(
@@ -192,6 +221,10 @@ def answer_message(
     live_result = _live_information_answer(message)
     if live_result is not None:
         return live_result
+
+    if any(phrase in _normalize(message) for phrase in CONVERSATION_RECALL_PHRASES):
+        result = _openai_general_answer(message, history) if OPENAI_API_KEY else None
+        return result or _general_fallback(message)
 
     personal_query = _is_personal_query(message, people=people, history=history)
     if not personal_query:
@@ -416,12 +449,20 @@ def _grounded_answer(
 
     person = _resolve_person(message, people, history)
     event_intent = bool(words & EVENT_WORDS)
+    memory_difficulty = _expresses_memory_difficulty(normalized)
     personal_memory_intent = bool(
         words & (MEMORY_WORDS | PREFERENCE_WORDS | ROUTINE_WORDS | LOCATION_WORDS)
     )
 
     if words & FOLLOW_UP_WORDS and person is None:
         return _unknown_personal(message, people)
+
+    if person and (_asks_about_person(normalized, words, person) or memory_difficulty):
+        return _person_orientation_answer(
+            message=message,
+            person=person,
+            memories=memories,
+        )
 
     if event_intent:
         upcoming = _upcoming_events(events, person_id=person["id"] if person else None)
@@ -437,18 +478,42 @@ def _grounded_answer(
                 True,
                 sources,
                 False,
+                [
+                    f"{event['title']} is scheduled for {event['start_time']}.",
+                    *(
+                        [
+                            (
+                                f"{event_person['name']} is the person associated with this "
+                                "scheduled event."
+                            )
+                        ]
+                        if event_person
+                        else []
+                    ),
+                ],
             )
         return _unknown_personal(message, people)
 
-    if personal_memory_intent:
+    reference_memory_intent = person is not None and bool(words & {"that", "this", "it"})
+    if personal_memory_intent or reference_memory_intent:
         matching_memories = _relevant_memories(message, memories, person)
+        if not matching_memories and reference_memory_intent:
+            matching_memories = sorted(
+                (memory for memory in memories if memory["person_id"] == person["id"]),
+                key=lambda memory: (memory["created_at"], memory["id"]),
+                reverse=True,
+            )
         if matching_memories:
             memory = matching_memories[0]
             sources = [{"type": "memory", "id": memory["id"]}]
             if person:
                 sources.append({"type": "person", "id": person["id"]})
             return AssistantResult(
-                f"A stored memory says: {memory['content']}", True, sources, False
+                _memory_fallback(memory["content"]),
+                True,
+                sources,
+                False,
+                [f"Caregiver-confirmed memory: {memory['content']}"],
             )
         return _unknown_personal(message, people)
 
@@ -461,6 +526,10 @@ def _grounded_answer(
             True,
             [{"type": "person", "id": item["id"]} for item in people],
             False,
+            [
+                f"{item['name']}'s relationship is {item['relationship']}."
+                for item in people
+            ],
         )
 
     if person and _asks_about_person(normalized, words, person):
@@ -470,9 +539,66 @@ def _grounded_answer(
             True,
             [{"type": "person", "id": person["id"]}],
             False,
+            _person_facts(person),
         )
 
     return _unknown_personal(message, people)
+
+
+def _person_orientation_answer(
+    *,
+    message: str,
+    person: dict[str, Any],
+    memories: list[dict[str, Any]],
+) -> AssistantResult:
+    normalized = _normalize(message)
+    direct_identity_question = bool(
+        set(normalized.split()) & {"who", "relationship", "related"}
+        or "tell me about" in normalized
+        or normalized == _normalize(person["name"])
+    )
+    person_memories = sorted(
+        (memory for memory in memories if memory["person_id"] == person["id"]),
+        key=lambda memory: (memory["created_at"], memory["id"]),
+        reverse=True,
+    )
+    memory = person_memories[0] if person_memories else None
+    facts = _person_facts(person)
+    sources = [{"type": "person", "id": person["id"]}]
+    if memory:
+        facts.append(f"Caregiver-confirmed memory: {memory['content']}")
+        sources.append({"type": "memory", "id": memory["id"]})
+    if person.get("photo_url"):
+        facts.append(f"A photograph of {person['name']} is available to show in the companion.")
+
+    if _expresses_memory_difficulty(normalized) and not direct_identity_question:
+        if person.get("photo_url"):
+            fallback = f"That's alright. Would you like to see a picture of {person['name']}?"
+        else:
+            fallback = "That's alright. We can take it one step at a time."
+    else:
+        fallback = f"{person['name']} is your {person['relationship']}."
+        if memory:
+            fallback += f" {_memory_fallback(memory['content'])}"
+        if person.get("photo_url"):
+            fallback += " Would you like to see a picture?"
+
+    return AssistantResult(fallback, True, sources, False, facts)
+
+
+def _person_facts(person: dict[str, Any]) -> list[str]:
+    facts = [f"{person['name']}'s relationship to the user is {person['relationship']}."]
+    if person["description"]:
+        facts.append(f"Caregiver-confirmed description: {person['description']}")
+    return facts
+
+
+def _memory_fallback(content: str) -> str:
+    return f"The caregiver notes say {content[0].lower() + content[1:]}"
+
+
+def _expresses_memory_difficulty(normalized: str) -> bool:
+    return any(phrase in normalized for phrase in MEMORY_DIFFICULTY_PHRASES)
 
 
 def _daily_plan_answer(
@@ -692,24 +818,31 @@ def _openai_grounded_answer(
     if any(source["type"] == "handoff" for source in verified.sources):
         return None
     system = (
-        "You are Anchor, a warm conversational companion for an older adult. Rewrite the supplied "
-        "VERIFIED_ANSWER naturally and concisely. It is the complete set of personal facts you may "
-        "use. Preserve its meaning exactly. Do not add, infer, or guess any person, relationship, "
-        "memory, preference, location, medication, date, time, event status, or completed action. "
-        "A scheduled event is only a plan; never imply it occurred or that someone arrived. "
-        "Return JSON that matches the required schema."
+        "You are Anchor, a warm, capable conversational companion for an older adult who may have "
+        "memory difficulties. Respond to the user's actual intent or feeling first, then use only "
+        "the VERIFIED_FACTS that are helpful. Never quote a database record mechanically or say "
+        "'a stored memory says.' Prioritize a person's identity or relationship before a shared "
+        "memory. For confusion or difficulty remembering, be patient and direct without testing, "
+        "correcting, infantilizing, or insisting the user remember. Offer a photo only when a "
+        "verified fact says one is available. Keep the response natural and suitable for speech, "
+        "usually one to three short sentences. A relevant follow-up question is optional, not "
+        "required. RECENT_CONVERSATION is only for conversational continuity and is never a source "
+        "of personal facts; prior assistant statements are not authoritative. Do not add, infer, "
+        "or guess any person, relationship, memory, preference, location, medication, date, time, "
+        "event status, or completed action. A scheduled event is only a plan; never imply it "
+        "occurred or that someone arrived. Return JSON that matches the required schema."
     )
     messages = [{"role": "system", "content": system}]
-    recent_users = [item for item in history if item["role"] == "user"][-4:]
-    messages.extend({"role": "user", "content": item["content"]} for item in recent_users[:-1])
     messages.append(
         {
             "role": "user",
             "content": json.dumps(
                 {
-                    "question": message,
-                    "verified_answer": verified.content,
+                    "user_message": message,
+                    "response_intent": _response_intent(message),
+                    "verified_facts": verified.verified_facts or [verified.content],
                     "verified_sources": verified.sources,
+                    "recent_conversation": history[-8:],
                 }
             ),
         }
@@ -722,16 +855,20 @@ def _openai_grounded_answer(
 
 def _openai_general_answer(message: str, history: list[dict[str, Any]]) -> AssistantResult | None:
     system = (
-        "You are Anchor, a warm conversational companion for an older adult. Respond naturally, "
-        "respectfully, and concisely in one or two short sentences. This route is only for ordinary "
-        "conversation. Do not invent or assert personal facts, relationships, memories, schedules, "
-        "medications, locations, or actions. Do not claim you called, texted, messaged, scheduled, "
-        "or contacted anyone. Do not provide personalized medical advice. Use conversation history "
-        "only for conversational continuity, never as authoritative personal data. Never treat a "
-        "previous assistant statement as caregiver-confirmed. If asked about live weather, news, "
-        "scores, traffic, prices, or other current external information, clearly say you do not "
-        "have live access and suggest checking a current source. Return JSON that matches the "
-        "required schema."
+        "You are Anchor, a warm, capable conversational companion for an older adult. Respond to "
+        "what the user actually said in a calm, respectful, natural voice. Keep most answers to "
+        "one to three short sentences suitable for speech. Be present with loneliness, answer "
+        "ordinary questions helpfully, and ask one simple clarifying question when the user is "
+        "confused and their meaning is unclear. Avoid customer-service phrasing, excessive "
+        "reassurance, infantilizing language, repeated introductions, and a question at the end of "
+        "every response. Do not invent or assert personal facts, relationships, memories, "
+        "schedules, medications, locations, or actions. Do not claim you called, texted, messaged, "
+        "scheduled, or contacted anyone. Do not provide personalized medical advice. Use "
+        "conversation history only for continuity and discussion recall, never as authoritative "
+        "personal data. Never treat a previous assistant statement as caregiver-confirmed. If "
+        "asked about live weather, news, scores, traffic, prices, or other current external "
+        "information, clearly say you do not have live access and suggest checking a current "
+        "source. Return JSON that matches the required schema."
     )
     messages = [{"role": "system", "content": system}]
     recent = history[-10:]
@@ -800,7 +937,9 @@ def _safe_grounded_response(content: str, verified: AssistantResult) -> bool:
     if not _safe_general_response(content):
         return False
     normalized = _normalize(content)
-    verified_normalized = _normalize(verified.content)
+    verified_normalized = _normalize(
+        " ".join([verified.content, *verified.verified_facts])
+    )
     response_numbers = set(re.findall(r"\d+", normalized))
     verified_numbers = set(re.findall(r"\d+", verified_normalized))
     if not response_numbers <= verified_numbers:
@@ -810,6 +949,21 @@ def _safe_grounded_response(content: str, verified: AssistantResult) -> bool:
         for phrase in ("already visited", "has arrived", "have arrived", "visit happened")
     ):
         return False
+    if set(normalized.split()) & {"photo", "photograph", "picture"} and not (
+        set(verified_normalized.split()) & {"photo", "photograph", "picture"}
+    ):
+        return False
     verified_words = {word for word in verified_normalized.split() if len(word) > 3}
     response_words = {word for word in normalized.split() if len(word) > 3}
     return bool(verified_words & response_words)
+
+
+def _response_intent(message: str) -> str:
+    normalized = _normalize(message)
+    if _expresses_memory_difficulty(normalized):
+        return "patiently orient or support the user without implying they should remember"
+    if any(phrase in normalized for phrase in DAILY_PLAN_PHRASES):
+        return "briefly explain today's verified plans"
+    if set(normalized.split()) & EVENT_WORDS:
+        return "answer the scheduling question without implying the event happened"
+    return "answer the personal question directly using only verified facts"
