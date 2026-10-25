@@ -23,6 +23,7 @@ FOLLOW_UP_WORDS = {
     "remember",
 }
 EMERGENCY_PHRASES = {
+    "can t breathe",
     "cant breathe",
     "cannot breathe",
     "chest pain",

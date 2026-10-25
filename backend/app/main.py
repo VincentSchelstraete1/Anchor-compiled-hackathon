@@ -15,7 +15,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.assistant import answer_message
+from app.assistant import AssistantResult, answer_message
+from app.communications import create_action, process_communication_turn, transition_action
 from app.config import DATABASE_PATH, FRONTEND_ORIGINS, UPLOADS_PATH
 from app.db import get_connection, initialize_database, seed_demo, utc_text
 from app.reminders import (
@@ -34,11 +35,16 @@ from app.schemas import (
     CheckInSettings,
     CheckInSettingsUpdate,
     CheckInUpdate,
+    CommunicationAction,
+    CommunicationActionCreate,
+    CommunicationActionStatus,
+    CommunicationActionType,
     CompanionSettings,
     CompanionSettingsUpdate,
     ConversationContext,
     ConversationMessage,
     DailyBriefing,
+    DemoCommunicationActionCreate,
     DemoReminderCreate,
     DemoSeedResult,
     Event,
@@ -91,6 +97,12 @@ def _row(row: sqlite3.Row) -> dict[str, Any]:
 def _reminder(item: sqlite3.Row | dict[str, Any]) -> ReminderNotification:
     return ReminderNotification(
         **{field: item[field] for field in ReminderNotification.model_fields}
+    )
+
+
+def _communication_action(item: sqlite3.Row | dict[str, Any]) -> CommunicationAction:
+    return CommunicationAction(
+        **{field: item[field] for field in CommunicationAction.model_fields}
     )
 
 
@@ -234,8 +246,16 @@ def create_app(
     @application.post("/people", response_model=Person, status_code=201)
     def create_person(payload: PersonCreate, db: sqlite3.Connection = Depends(database)) -> Person:
         cursor = db.execute(
-            "INSERT INTO people(name, relationship, description, photo_url) VALUES (?, ?, ?, ?)",
-            (payload.name, payload.relationship, payload.description, payload.photo_url),
+            """INSERT INTO people(
+                name, relationship, description, photo_url, contact_approved
+            ) VALUES (?, ?, ?, ?, ?)""",
+            (
+                payload.name,
+                payload.relationship,
+                payload.description,
+                payload.photo_url,
+                payload.contact_approved,
+            ),
         )
         db.commit()
         row = db.execute("SELECT * FROM people WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -785,6 +805,171 @@ def create_app(
         saved.pop("id")
         return CheckInSettings(**saved)
 
+    def validate_action_recipient(
+        db: sqlite3.Connection, action_type: CommunicationActionType, person_id: int | None
+    ) -> None:
+        if person_id is None:
+            if action_type != "URGENT_HELP_REQUESTED":
+                raise HTTPException(
+                    422,
+                    detail=_error(
+                        "validation_error", "A recipient is required for this action type"
+                    ),
+                )
+            return
+        row = db.execute(
+            "SELECT contact_approved FROM people WHERE id = ?", (person_id,)
+        ).fetchone()
+        if row is None:
+            raise _not_found("Person")
+        if not row["contact_approved"]:
+            raise HTTPException(
+                409,
+                detail=_error("conflict", "Recipient is not an approved contact"),
+            )
+
+    @application.get("/communication-actions")
+    def list_communication_actions(
+        action_status: CommunicationActionStatus | None = Query(default=None, alias="status"),
+        action_type: CommunicationActionType | None = None,
+        recipient_person_id: int | None = Query(default=None, gt=0),
+        db: sqlite3.Connection = Depends(database),
+    ) -> dict[str, list[CommunicationAction]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for field, value in (
+            ("status", action_status),
+            ("action_type", action_type),
+            ("recipient_person_id", recipient_person_id),
+        ):
+            if value is not None:
+                clauses.append(f"{field} = ?")
+                params.append(value)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = db.execute(
+            f"SELECT * FROM communication_actions{where} ORDER BY created_at DESC, id DESC",
+            params,
+        ).fetchall()
+        return {"items": [_communication_action(row) for row in rows]}
+
+    @application.post("/communication-actions", response_model=CommunicationAction, status_code=201)
+    def create_communication_action(
+        payload: CommunicationActionCreate,
+        db: sqlite3.Connection = Depends(database),
+    ) -> CommunicationAction:
+        validate_action_recipient(db, payload.action_type, payload.recipient_person_id)
+        if payload.source_conversation_message_id is not None and db.execute(
+            "SELECT 1 FROM conversation_messages WHERE id = ?",
+            (payload.source_conversation_message_id,),
+        ).fetchone() is None:
+            raise _not_found("Conversation message")
+        item, created = create_action(
+            db,
+            action_type=payload.action_type,
+            recipient_person_id=payload.recipient_person_id,
+            reason=payload.reason,
+            proposed_content=payload.proposed_content,
+            source_conversation_message_id=payload.source_conversation_message_id,
+        )
+        if not created:
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "conflict",
+                    "A matching communication action already exists",
+                    {"action_id": item["id"]},
+                ),
+            )
+        return _communication_action(item)
+
+    @application.get(
+        "/communication-actions/{action_id}", response_model=CommunicationAction
+    )
+    def get_communication_action(
+        action_id: int, db: sqlite3.Connection = Depends(database)
+    ) -> CommunicationAction:
+        row = db.execute(
+            "SELECT * FROM communication_actions WHERE id = ?", (action_id,)
+        ).fetchone()
+        if row is None:
+            raise _not_found("Communication action")
+        return _communication_action(row)
+
+    def transition_communication_action(
+        action_id: int,
+        target: Literal["CONFIRMED", "SIMULATED", "CANCELLED"],
+        db: sqlite3.Connection,
+    ) -> CommunicationAction:
+        try:
+            item = transition_action(db, action_id, target)
+        except ValueError as exc:
+            raise HTTPException(
+                409, detail=_error("conflict", str(exc))
+            ) from exc
+        if item is None:
+            raise _not_found("Communication action")
+        return _communication_action(item)
+
+    @application.post(
+        "/communication-actions/{action_id}/confirm", response_model=CommunicationAction
+    )
+    def confirm_communication_action(
+        action_id: int, db: sqlite3.Connection = Depends(database)
+    ) -> CommunicationAction:
+        return transition_communication_action(action_id, "CONFIRMED", db)
+
+    @application.post(
+        "/communication-actions/{action_id}/simulate", response_model=CommunicationAction
+    )
+    def simulate_communication_action(
+        action_id: int, db: sqlite3.Connection = Depends(database)
+    ) -> CommunicationAction:
+        return transition_communication_action(action_id, "SIMULATED", db)
+
+    @application.post(
+        "/communication-actions/{action_id}/cancel", response_model=CommunicationAction
+    )
+    def cancel_communication_action(
+        action_id: int, db: sqlite3.Connection = Depends(database)
+    ) -> CommunicationAction:
+        return transition_communication_action(action_id, "CANCELLED", db)
+
+    @application.post(
+        "/demo/communication-actions", response_model=CommunicationAction, status_code=201
+    )
+    def create_demo_communication_action(
+        payload: DemoCommunicationActionCreate,
+        db: sqlite3.Connection = Depends(database),
+    ) -> CommunicationAction:
+        validate_action_recipient(db, payload.action_type, payload.recipient_person_id)
+        item, created = create_action(
+            db,
+            action_type=payload.action_type,
+            recipient_person_id=payload.recipient_person_id,
+            reason=payload.reason,
+            proposed_content=payload.proposed_content,
+            source_conversation_message_id=None,
+            is_demo=True,
+        )
+        if not created:
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "conflict",
+                    "A matching demo communication action already exists",
+                    {"action_id": item["id"]},
+                ),
+            )
+        return _communication_action(item)
+
+    @application.delete("/demo/communication-actions", status_code=204)
+    def reset_demo_communication_actions(
+        db: sqlite3.Connection = Depends(database),
+    ) -> Response:
+        db.execute("DELETE FROM communication_actions WHERE is_demo = 1")
+        db.commit()
+        return Response(status_code=204)
+
     @application.get("/conversation/messages")
     def conversation_messages(
         limit: int = Query(default=12, ge=1, le=50),
@@ -837,7 +1022,7 @@ def create_app(
 
     @application.post("/chat", response_model=ChatResponse)
     def chat(payload: ChatRequest, db: sqlite3.Connection = Depends(database)) -> ChatResponse:
-        db.execute(
+        user_cursor = db.execute(
             "INSERT INTO conversation_messages(role, content, created_at) VALUES ('user', ?, ?)",
             (payload.message, utc_text()),
         )
@@ -853,16 +1038,20 @@ def create_app(
         ]
         handoffs = [_row(row) for row in db.execute("SELECT * FROM handoffs").fetchall()]
         timezone = str(get_settings(db)["timezone"])
-        result = answer_message(
-            payload.message,
-            people=people,
-            memories=memories,
-            medications=medications,
-            events=events,
-            handoffs=handoffs,
-            history=[_row(row) for row in reversed(history_rows)],
-            timezone=timezone,
-        )
+        communication = process_communication_turn(db, payload.message, user_cursor.lastrowid)
+        if communication is not None:
+            result = AssistantResult(communication.content, False, [], False)
+        else:
+            result = answer_message(
+                payload.message,
+                people=people,
+                memories=memories,
+                medications=medications,
+                events=events,
+                handoffs=handoffs,
+                history=[_row(row) for row in reversed(history_rows)],
+                timezone=timezone,
+            )
         cursor = db.execute(
             "INSERT INTO conversation_messages(role, content, created_at) VALUES ('assistant', ?, ?)",
             (result.content, utc_text()),

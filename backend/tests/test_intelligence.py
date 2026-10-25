@@ -461,7 +461,7 @@ def test_medical_and_contact_safety_rules_override_model(tmp_path: Path, monkeyp
     assert emergency["handoff_offered"] is False
     assert "can't safely tell you" in medication["message"]["content"]
     assert "can't assess symptoms" in symptom["message"]["content"]
-    assert "can't place a call" in contact["message"]["content"]
+    assert "caregiver-approved person" in contact["message"]["content"]
     assert "haven't called, texted, or messaged anyone" in claimed["message"]["content"]
 
 

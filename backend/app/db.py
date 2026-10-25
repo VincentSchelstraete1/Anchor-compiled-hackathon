@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS people (
     name TEXT NOT NULL,
     relationship TEXT NOT NULL,
     description TEXT NOT NULL,
-    photo_url TEXT
+    photo_url TEXT,
+    contact_approved INTEGER NOT NULL DEFAULT 0 CHECK (contact_approved IN (0, 1))
 );
 CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +113,32 @@ CREATE TABLE IF NOT EXISTS reminder_notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_reminder_notifications_due
 ON reminder_notifications(status, due_at);
+CREATE TABLE IF NOT EXISTS communication_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_type TEXT NOT NULL CHECK (action_type IN (
+        'SMS_REQUESTED', 'CALL_REQUESTED', 'CAREGIVER_ASSISTANCE', 'URGENT_HELP_REQUESTED'
+    )),
+    recipient_person_id INTEGER REFERENCES people(id) ON DELETE RESTRICT,
+    reason TEXT NOT NULL,
+    proposed_content TEXT,
+    status TEXT NOT NULL CHECK (status IN (
+        'PROPOSED', 'CONFIRMED', 'SIMULATED', 'CANCELLED'
+    )),
+    confirmation_status TEXT NOT NULL CHECK (confirmation_status IN (
+        'PENDING', 'CONFIRMED', 'CANCELLED'
+    )),
+    execution_status TEXT NOT NULL CHECK (execution_status IN (
+        'NOT_EXECUTED', 'SIMULATED'
+    )),
+    source_conversation_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL,
+    is_demo INTEGER NOT NULL DEFAULT 0 CHECK (is_demo IN (0, 1)),
+    created_at TEXT NOT NULL,
+    confirmed_at TEXT,
+    simulated_at TEXT,
+    cancelled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_communication_actions_status
+ON communication_actions(status, created_at);
 """
 
 
@@ -145,6 +172,18 @@ def initialize_database(path: Path | str = DATABASE_PATH, *, seed: bool = True) 
         if "reminder_enabled" not in event_columns:
             connection.execute(
                 "ALTER TABLE events ADD COLUMN reminder_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        people_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(people)").fetchall()
+        }
+        if "contact_approved" not in people_columns:
+            connection.execute(
+                "ALTER TABLE people ADD COLUMN contact_approved INTEGER NOT NULL DEFAULT 0"
+            )
+            connection.execute(
+                """UPDATE people SET contact_approved = 1
+                WHERE lower(relationship) = 'caregiver'
+                OR lower(description) LIKE '%caregiver%'"""
             )
         connection.execute(
             """INSERT OR IGNORE INTO companion_settings(
@@ -198,8 +237,16 @@ def seed_demo(connection: sqlite3.Connection) -> bool:
         ),
     ):
         cursor = connection.execute(
-            "INSERT INTO people(name, relationship, description, photo_url) VALUES (?, ?, ?, ?)",
-            (name, relationship, description, None),
+            """INSERT INTO people(
+                name, relationship, description, photo_url, contact_approved
+            ) VALUES (?, ?, ?, ?, ?)""",
+            (
+                name,
+                relationship,
+                description,
+                None,
+                int(name in {"Elena", "Dr. Chen"}),
+            ),
         )
         people[name] = int(cursor.lastrowid)
 
@@ -425,8 +472,9 @@ def _seed_demo_family_expansion(
         margaret_id = int(row["id"])
 
     daniel = connection.execute(
-        """INSERT INTO people(name, relationship, description, photo_url)
-        VALUES (?, ?, ?, ?)""",
+        """INSERT INTO people(
+            name, relationship, description, photo_url, contact_approved
+        ) VALUES (?, ?, ?, ?, 1)""",
         (
             "Daniel",
             "Son",

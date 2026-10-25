@@ -26,6 +26,13 @@ Text = Annotated[str, BeforeValidator(_trim)]
 Timestamp = Annotated[datetime, AfterValidator(_aware)]
 EventStatus = Literal["scheduled", "completed", "cancelled"]
 HandoffStatus = Literal["pending", "answered", "delivered", "cancelled"]
+CommunicationActionType = Literal[
+    "SMS_REQUESTED",
+    "CALL_REQUESTED",
+    "CAREGIVER_ASSISTANCE",
+    "URGENT_HELP_REQUESTED",
+]
+CommunicationActionStatus = Literal["PROPOSED", "CONFIRMED", "SIMULATED", "CANCELLED"]
 
 
 class StrictModel(BaseModel):
@@ -37,6 +44,7 @@ class PersonFields(StrictModel):
     relationship: Text = Field(min_length=1, max_length=120)
     description: Text = Field(max_length=2000)
     photo_url: Text | None = None
+    contact_approved: bool = False
 
     @model_validator(mode="after")
     def validate_photo_url(self) -> "PersonFields":
@@ -54,6 +62,7 @@ class PersonUpdate(StrictModel):
     relationship: Text | None = Field(default=None, min_length=1, max_length=120)
     description: Text | None = Field(default=None, max_length=2000)
     photo_url: Text | None = None
+    contact_approved: bool | None = None
 
     @model_validator(mode="after")
     def validate_update(self) -> "PersonUpdate":
@@ -65,7 +74,7 @@ class PersonUpdate(StrictModel):
             and not self.photo_url.startswith("/")
         ):
             HttpUrl(self.photo_url)
-        for field in ("name", "relationship", "description"):
+        for field in ("name", "relationship", "description", "contact_approved"):
             if field in self.model_fields_set and getattr(self, field) is None:
                 raise ValueError(f"{field} cannot be null")
         return self
@@ -356,6 +365,39 @@ class DailyBriefing(StrictModel):
     scheduled_routines: list[Memory]
     relevant_reminders: list[ReminderNotification]
     preferences: list[Memory]
+
+
+class CommunicationAction(StrictModel):
+    id: int
+    action_type: CommunicationActionType
+    recipient_person_id: int | None
+    reason: str
+    proposed_content: str | None
+    status: CommunicationActionStatus
+    confirmation_status: Literal["PENDING", "CONFIRMED", "CANCELLED"]
+    execution_status: Literal["NOT_EXECUTED", "SIMULATED"]
+    source_conversation_message_id: int | None
+    is_demo: bool
+    created_at: str
+    confirmed_at: str | None
+    simulated_at: str | None
+    cancelled_at: str | None
+
+
+class CommunicationActionCreate(StrictModel):
+    action_type: CommunicationActionType
+    recipient_person_id: int | None = Field(default=None, gt=0)
+    reason: Text = Field(min_length=1, max_length=2000)
+    proposed_content: Text | None = Field(default=None, min_length=1, max_length=2000)
+    source_conversation_message_id: int | None = Field(default=None, gt=0)
+
+
+class DemoCommunicationActionCreate(StrictModel):
+    action_type: CommunicationActionType
+    recipient_person_id: int | None = Field(default=None, gt=0)
+    reason: Text = Field(min_length=1, max_length=2000)
+    proposed_content: Text | None = Field(default=None, min_length=1, max_length=2000)
+    simulated: Literal[True]
 
 
 class Source(StrictModel):
