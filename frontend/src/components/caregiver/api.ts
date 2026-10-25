@@ -1,4 +1,6 @@
 import type {
+  CheckInSettings,
+  CheckInSettingsUpdate,
   Event,
   EventCreate,
   EventUpdate,
@@ -80,6 +82,11 @@ export const caregiverApi = {
     update: (id: number, data: EventUpdate) =>
       request<Event>(`/events/${id}`, { method: "PATCH", ...json(data) }),
     remove: (id: number) => request<void>(`/events/${id}`, { method: "DELETE" }),
+  },
+  checkIns: {
+    get: () => request<CheckInSettings>("/settings/check-ins"),
+    update: (data: CheckInSettingsUpdate) =>
+      request<CheckInSettings>("/settings/check-ins", { method: "PUT", ...json(data) }),
   },
   handoffs: {
     list: () => request<ListResponse<Handoff>>("/handoffs"),

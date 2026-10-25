@@ -176,6 +176,7 @@ class EventFields(StrictModel):
     start_time: Timestamp
     person_id: int | None = Field(default=None, gt=0)
     reminder_minutes: int = Field(ge=0, le=10080)
+    reminder_enabled: bool = True
     status: EventStatus
 
 
@@ -189,6 +190,7 @@ class EventUpdate(StrictModel):
     start_time: Timestamp | None = None
     person_id: int | None = Field(default=None, gt=0)
     reminder_minutes: int | None = Field(default=None, ge=0, le=10080)
+    reminder_enabled: bool | None = None
     status: EventStatus | None = None
 
     @model_validator(mode="after")
@@ -200,6 +202,7 @@ class EventUpdate(StrictModel):
             "description",
             "start_time",
             "reminder_minutes",
+            "reminder_enabled",
             "status",
         ):
             if field in self.model_fields_set and getattr(self, field) is None:
@@ -214,7 +217,27 @@ class Event(StrictModel):
     start_time: str
     person_id: int | None
     reminder_minutes: int
+    reminder_enabled: bool
     status: EventStatus
+
+
+class CheckInSettingsFields(StrictModel):
+    proactive_enabled: bool
+    morning_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    afternoon_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    evening_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    quiet_hours_start: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    quiet_hours_end: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    reminder_lead_minutes: int = Field(ge=0, le=10080)
+    spoken_reminders_enabled: bool
+
+
+class CheckInSettingsUpdate(CheckInSettingsFields):
+    pass
+
+
+class CheckInSettings(CheckInSettingsFields):
+    updated_at: str
 
 
 class ConversationMessage(StrictModel):

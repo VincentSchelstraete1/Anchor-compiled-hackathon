@@ -53,10 +53,24 @@ export interface Event {
   start_time: ISODateTime;
   person_id: number | null;
   reminder_minutes: number;
+  reminder_enabled?: boolean;
   status: EventStatus;
 }
 export type EventCreate = Omit<Event, "id">;
 export type EventUpdate = Partial<EventCreate>;
+
+export interface CheckInSettings {
+  proactive_enabled: boolean;
+  morning_time: string;
+  afternoon_time: string;
+  evening_time: string;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  reminder_lead_minutes: number;
+  spoken_reminders_enabled: boolean;
+  updated_at: ISODateTime;
+}
+export type CheckInSettingsUpdate = Omit<CheckInSettings, "updated_at">;
 
 export type HandoffStatus = "pending" | "answered" | "delivered" | "cancelled";
 export interface Handoff {

@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -118,24 +119,25 @@ def test_fictional_demo_seed_is_idempotent_persistent_and_available_to_companion
         assert first.status_code == 200
         assert first.json() == {
             "seeded": True,
-            "people": 4,
-            "memories": 10,
-            "events": 5,
+            "people": 5,
+            "memories": 12,
+            "events": 6,
             "medications": 3,
         }
         assert second.json() == {
             "seeded": False,
-            "people": 4,
-            "memories": 10,
-            "events": 5,
+            "people": 5,
+            "memories": 12,
+            "events": 6,
             "medications": 3,
         }
 
         context = demo_client.get("/conversation/context").json()
-        assert len(context["people"]) == 4
-        assert len(context["memories"]) == 10
+        assert len(context["people"]) == 5
+        assert len(context["memories"]) == 12
         assert len(context["medications"]) == 3
-        assert len(context["upcoming_events"]) == 5
+        assert len(context["upcoming_events"]) == 6
+        assert any(person["name"] == "Daniel" for person in context["people"])
         margaret = next(person for person in context["people"] if person["name"] == "Margaret")
         assert margaret["description"].startswith("Fictional demo —")
 
@@ -158,7 +160,7 @@ def test_fictional_demo_seed_is_idempotent_persistent_and_available_to_companion
 
     restarted = create_app(database_path, seed=True, uploads_path=tmp_path / "uploads")
     with TestClient(restarted) as restarted_client:
-        assert len(restarted_client.get("/people").json()["items"]) == 4
+        assert len(restarted_client.get("/people").json()["items"]) == 5
         assert restarted_client.post("/demo/seed").json()["seeded"] is False
 
 
@@ -354,10 +356,14 @@ def test_events_crud_filters_and_due_reminders(client: TestClient) -> None:
     assert response.status_code == 201
     event = response.json()
     assert event["start_time"].endswith("Z")
+    assert event["reminder_enabled"] is True
 
     due_at = (start - timedelta(minutes=10)).isoformat()
     assert client.get("/reminders/due", params={"at": due_at}).json()["items"] == [event]
     assert client.get("/events", params={"status": "scheduled"}).json()["items"] == [event]
+    disabled = client.patch(f"/events/{event['id']}", json={"reminder_enabled": False})
+    assert disabled.json()["reminder_enabled"] is False
+    assert client.get("/reminders/due", params={"at": due_at}).json()["items"] == []
     assert (
         client.post("/events", json={**payload, "start_time": "2026-01-01T12:00:00"}).status_code
         == 422
@@ -368,6 +374,92 @@ def test_events_crud_filters_and_due_reminders(client: TestClient) -> None:
     )
     assert client.get("/events/999").status_code == 404
     assert client.delete(f"/events/{event['id']}").status_code == 204
+
+
+def test_check_in_settings_persist_and_control_spoken_reminders(tmp_path: Path) -> None:
+    database_path = tmp_path / "settings.db"
+    app = create_app(database_path, seed=False, uploads_path=tmp_path / "uploads")
+    with TestClient(app) as settings_client:
+        defaults = settings_client.get("/settings/check-ins")
+        assert defaults.status_code == 200
+        assert defaults.json()["morning_time"] == "09:00"
+
+        payload = {
+            "proactive_enabled": True,
+            "morning_time": "08:30",
+            "afternoon_time": "14:15",
+            "evening_time": "19:45",
+            "quiet_hours_start": "21:30",
+            "quiet_hours_end": "07:15",
+            "reminder_lead_minutes": 15,
+            "spoken_reminders_enabled": False,
+        }
+        saved = settings_client.put("/settings/check-ins", json=payload)
+        assert saved.status_code == 200
+        assert {key: saved.json()[key] for key in payload} == payload
+        assert (
+            settings_client.put(
+                "/settings/check-ins", json={**payload, "morning_time": "25:00"}
+            ).status_code
+            == 422
+        )
+
+        person = create_person(settings_client)
+        start = datetime.now(UTC) + timedelta(minutes=20)
+        event = settings_client.post(
+            "/events",
+            json={
+                "title": "Elena visits",
+                "description": "Expected visit",
+                "start_time": start.isoformat(),
+                "person_id": person["id"],
+                "reminder_minutes": 30,
+                "reminder_enabled": True,
+                "status": "scheduled",
+            },
+        )
+        assert event.status_code == 201
+        assert (
+            settings_client.get(
+                "/reminders/due", params={"at": (start - timedelta(minutes=10)).isoformat()}
+            ).json()["items"]
+            == []
+        )
+
+    restarted = create_app(database_path, seed=False, uploads_path=tmp_path / "uploads")
+    with TestClient(restarted) as restarted_client:
+        persisted = restarted_client.get("/settings/check-ins").json()
+        assert {key: persisted[key] for key in payload} == payload
+
+
+def test_existing_events_are_preserved_when_reminder_toggle_is_added(tmp_path: Path) -> None:
+    database_path = tmp_path / "existing-events.db"
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        """CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            person_id INTEGER,
+            reminder_minutes INTEGER NOT NULL,
+            status TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """INSERT INTO events(
+            title, description, start_time, person_id, reminder_minutes, status
+        ) VALUES ('Existing visit', '', '2026-11-01T17:00:00Z', NULL, 15, 'scheduled')"""
+    )
+    connection.commit()
+    connection.close()
+
+    app = create_app(database_path, seed=False, uploads_path=tmp_path / "uploads")
+    with TestClient(app) as migrated_client:
+        events = migrated_client.get("/events").json()["items"]
+        assert len(events) == 1
+        assert events[0]["title"] == "Existing visit"
+        assert events[0]["reminder_enabled"] is True
 
 
 def test_handoff_consent_and_state_transitions(client: TestClient) -> None:
