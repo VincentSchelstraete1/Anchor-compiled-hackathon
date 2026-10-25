@@ -195,6 +195,17 @@ The caregiver record is the source of truth for personal details. Before answeri
 
 We split the work into three clear areas: backend, companion, and caregiver dashboard. Each area had its own branch and Git worktree, so work could happen in parallel without sharing an unfinished checkout.
 
+### Why we planned before coding
+
+We had five hours to build the demo, and the available AI-agent credits were limited. Spending part of that time planning felt expensive at first, but it prevented much more expensive rework later. Before any branch started, we agreed on the minimum demo, the API contract, file ownership, merge order, and the checks required for a handoff.
+
+That early planning mattered for two practical reasons:
+
+1. Coding agents can easily spend time on extra abstractions, duplicate work, or features that do not fit together. A narrow plan kept each agent focused on the smallest reliable end-to-end experience and made clear what we were intentionally not building.
+2. Every correction and repeated prompt used more of a limited credit budget. Giving each agent the same contracts and acceptance criteria reduced back-and-forth and saved those credits for integration, testing, and the parts users would actually see.
+
+The plan was not meant to predict every detail. It gave us enough shared structure to move quickly, then left room to adjust when the three branches met in `main`.
+
 ### Three worktrees, one codebase
 
 ```mermaid
