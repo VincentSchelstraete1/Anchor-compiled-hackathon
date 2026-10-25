@@ -8,7 +8,9 @@ export type SceneData =
   | { kind: "person"; person: Person; memory: Memory | null; event: Event | null }
   | { kind: "memory"; person: Person | null; memory: Memory }
   | { kind: "event"; person: Person | null; event: Event }
-  | { kind: "reminder"; person: Person | null; event: Event }
+  | { kind: "reminder"; person: Person | null; event: Event; reminderKey: string; demo?: boolean }
+  | { kind: "checkin"; message: string; checkInKey: string; demo?: boolean }
+  | { kind: "day"; mode: "briefing" | "visitors" }
   | { kind: "uncertain"; subject: Person | null }
   | { kind: "waiting"; caregiver: Person | null; question: string }
   | { kind: "reply"; caregiver: Person | null; handoff: Handoff };
@@ -76,13 +78,14 @@ export type AmbientStateName =
 export function deriveAmbientState(state: AmbientState, hasPendingHandoff: boolean): AmbientStateName {
   const { voice, scene } = state;
   if (voice === "listening" || voice === "processing") return voice;
-  if (scene.kind === "reminder") return "delivering_reminder";
+  if (scene.kind === "reminder" || scene.kind === "checkin") return "delivering_reminder";
   if (scene.kind === "reply") return "caregiver_reply";
   if (voice === "speaking") return "speaking";
   switch (scene.kind) {
     case "person": return "showing_person";
     case "memory": return "showing_memory";
-    case "event": return "showing_event";
+    case "event":
+    case "day": return "showing_event";
     case "uncertain": return "awaiting_consent";
     case "waiting": return "waiting_for_caregiver";
     default: return hasPendingHandoff ? "waiting_for_caregiver" : "idle";
@@ -92,7 +95,9 @@ export function deriveAmbientState(state: AmbientState, hasPendingHandoff: boole
 /** How long a scene lingers after Anchor goes quiet before returning home (ms). */
 export function sceneLinger(kind: SceneData["kind"]): number {
   switch (kind) {
-    case "reminder": return 10 * 60_000;
+    case "reminder":
+    case "checkin": return 10 * 60_000;
+    case "day": return 90_000;
     case "uncertain": return 90_000;
     case "reply": return 60_000;
     default: return 30_000;

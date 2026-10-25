@@ -3,6 +3,7 @@
 import type { Person } from "@/lib/api/types";
 import { SERIF } from "./AmbientDisplay";
 import { Fade } from "./Fade";
+import { resolveMediaUrl } from "./companion-api";
 
 function initials(name: string): string {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("");
@@ -16,13 +17,14 @@ export function PersonSpotlight({ person }: { person: Person | null }) {
       </section>
     );
   }
+  const photo = resolveMediaUrl(person.photo_url);
   return (
     <section aria-label="Familiar faces" className="flex min-h-0 flex-col rounded-[2rem] border border-[var(--a-border)] bg-[var(--a-card)] p-3 shadow-sm sm:p-4">
       <Fade id={person.id} duration={1400} className="anchor-photo relative w-full overflow-hidden rounded-3xl bg-[var(--a-sage-soft)]">
-        {person.photo_url ? (
+        {photo ? (
           // Photos come from arbitrary caregiver-supplied URLs, so next/image optimization does not apply.
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={person.photo_url} alt={`${person.name}, your ${person.relationship.toLowerCase()}`} className="absolute inset-0 size-full object-cover" />
+          <img src={photo} alt={`${person.name}, your ${person.relationship.toLowerCase()}`} className="absolute inset-0 size-full object-cover" />
         ) : (
           <div aria-hidden="true" className={`${SERIF} absolute inset-0 flex items-center justify-center text-[clamp(5rem,20vh,10rem)] text-[var(--a-sage)] opacity-60`}>
             {initials(person.name)}
