@@ -371,6 +371,18 @@ Open [http://localhost:3000](http://localhost:3000). The frontend reads `NEXT_PU
 
 ---
 
+## Team
+
+| Name | Profile |
+|---|---|
+| Vincent Schelstraete | [LinkedIn](https://www.linkedin.com/in/vincentschelstraete) |
+| Aayush Bhambi | [LinkedIn](https://www.linkedin.com/in/aayush-b-928972280/) |
+| Edwin Juarez | [LinkedIn](https://www.linkedin.com/in/edwin-julien-juarez-b678a6284/?isSelfProfile=false) |
+
+Project repository: [VincentSchelstraete1/Compiled-hackathon](https://github.com/VincentSchelstraete1/Compiled-hackathon)
+
+---
+
 ## Why It Matters
 
 Anchor is meant to make common questions easier to answer without turning every moment into a phone call or another app to navigate. It gives caregivers one place to keep information current and gives their loved one a calmer way to reach it.
