@@ -147,7 +147,7 @@ def test_relationship_event_and_memory_follow_ups(tmp_path: Path) -> None:
 
         relationship = client.post("/chat", json={"message": "Who is my daughter?"}).json()
         assert relationship["grounded"] is True
-        assert relationship["sources"] == [{"type": "person", "id": sarah["id"]}]
+        assert {source["type"] for source in relationship["sources"]} == {"person", "memory"}
         assert "Sarah is your daughter" in relationship["message"]["content"]
 
         timing = client.post("/chat", json={"message": "When is she coming?"}).json()
@@ -406,7 +406,9 @@ def test_grounded_personal_answer_is_naturalized_from_verified_facts(
         payload = json.loads(request.data)
         verified_payload = json.loads(payload["messages"][-1]["content"])
         captured.update(verified_payload)
-        return FakeOpenAIResponse(f"Good news — {verified_payload['verified_answer']}")
+        return FakeOpenAIResponse(
+            f"Good news — {verified_payload['verified_facts'][0]}"
+        )
 
     monkeypatch.setattr(assistant, "OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(assistant.urllib.request, "urlopen", fake_urlopen)
@@ -419,7 +421,7 @@ def test_grounded_personal_answer_is_naturalized_from_verified_facts(
     assert response["grounded"] is True
     assert {source["id"] for source in response["sources"]} == {sarah["id"], event["id"]}
     assert response["message"]["content"].startswith("Good news")
-    assert "scheduled to visit" in captured["verified_answer"]
+    assert "scheduled" in captured["verified_facts"][0]
 
 
 def test_unknown_personal_information_never_reaches_model(tmp_path: Path, monkeypatch) -> None:
@@ -504,3 +506,144 @@ def test_unconfirmed_model_action_claim_is_rejected(tmp_path: Path, monkeypatch)
     assert response["message"]["content"] == "I'm here with you. What would you like to talk about?"
     assert response["grounded"] is False
     assert response["handoff_offered"] is False
+
+
+def test_intent_aware_natural_conversation_uses_verified_context(
+    tmp_path: Path, monkeypatch
+) -> None:
+    model_inputs: list[dict | str] = []
+    responses = {
+        "Who is Elena?": (
+            "Elena is your daughter. You both enjoy gardening together on Sundays. "
+            "Would you like to see her picture?"
+        ),
+        "I don't remember who Elena is.": (
+            "Elena is your daughter. You enjoy gardening together on Sundays, and I can show "
+            "you her picture if you'd like."
+        ),
+        "Do we do that often?": (
+            "The caregiver notes say you and Elena enjoy gardening together on Sundays."
+        ),
+        "I don't remember doing that.": (
+            "That's alright. Would you like to see a picture of Elena?"
+        ),
+        "Tell me about my daughter.": (
+            "Your daughter is Elena. You two enjoy gardening together on Sundays."
+        ),
+        "I'm feeling lonely.": (
+            "I'm glad you told me. We can stay here and talk for a while."
+        ),
+        "What should I do today?": "You have Garden club planned today.",
+        "Do you remember what we talked about?": (
+            "We were talking about Elena and gardening together."
+        ),
+        "Tell me something interesting.": (
+            "Octopuses have three hearts, and two stop beating while they swim."
+        ),
+        "I'm confused.": "What feels confusing right now?",
+        "Can we just talk?": "Of course. We can talk about whatever is on your mind.",
+    }
+
+    def fake_urlopen(request, timeout: int):
+        payload = json.loads(request.data)
+        final_content = payload["messages"][-1]["content"]
+        try:
+            context = json.loads(final_content)
+            user_message = context["user_message"]
+            model_inputs.append(context)
+        except (json.JSONDecodeError, TypeError, KeyError):
+            user_message = final_content
+            model_inputs.append(final_content)
+        return FakeOpenAIResponse(responses[user_message])
+
+    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(assistant.urllib.request, "urlopen", fake_urlopen)
+    app = create_app(tmp_path / "natural-conversation.db", seed=False)
+    with TestClient(app) as client:
+        elena = client.post(
+            "/people",
+            json={
+                "name": "Elena",
+                "relationship": "daughter",
+                "description": "Elena lives nearby.",
+                "photo_url": "/images/elena.jpg",
+            },
+        ).json()
+        memory = _memory(
+            client,
+            elena["id"],
+            "Sunday gardening",
+            "Margaret and Elena enjoy gardening together on Sundays.",
+            "activity",
+        )
+        client.post(
+            "/events",
+            json={
+                "title": "Garden club",
+                "description": "A scheduled garden club meeting.",
+                "start_time": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                "person_id": None,
+                "reminder_minutes": 30,
+                "status": "scheduled",
+            },
+        )
+
+        outputs = {
+            message: client.post("/chat", json={"message": message}).json()
+            for message in responses
+        }
+
+    identity = outputs["I don't remember who Elena is."]
+    assert identity["grounded"] is True
+    assert {source["type"] for source in identity["sources"]} == {"person", "memory"}
+    assert {source["id"] for source in identity["sources"]} == {elena["id"], memory["id"]}
+    assert identity["message"]["content"].startswith("Elena is your daughter")
+    assert "picture" in identity["message"]["content"]
+    assert "A stored memory says" not in identity["message"]["content"]
+
+    assert outputs["I don't remember doing that."]["message"]["content"].startswith(
+        "That's alright"
+    )
+    assert "daughter" in outputs["Tell me about my daughter."]["message"]["content"]
+    assert outputs["I'm feeling lonely."]["handoff_offered"] is False
+    assert outputs["What should I do today?"]["grounded"] is True
+    assert "Elena" in outputs["Do you remember what we talked about?"]["message"]["content"]
+    assert outputs["I'm confused."]["message"]["content"] == "What feels confusing right now?"
+    assert len({item["message"]["content"] for item in outputs.values()}) == len(outputs)
+    assert all(
+        "stored memory" not in item["message"]["content"].lower()
+        for item in outputs.values()
+    )
+
+    identity_contexts = [
+        item
+        for item in model_inputs
+        if isinstance(item, dict) and item.get("user_message") == "Who is Elena?"
+    ]
+    assert "relationship" in identity_contexts[0]["verified_facts"][0]
+    assert "gardening together" in identity_contexts[0]["verified_facts"][-2]
+    assert "photograph" in identity_contexts[0]["verified_facts"][-1]
+    difficulty_context = next(
+        item
+        for item in model_inputs
+        if isinstance(item, dict) and item.get("user_message") == "I don't remember doing that."
+    )
+    assert difficulty_context["response_intent"].startswith("patiently orient")
+
+
+def test_model_cannot_offer_an_unverified_photo(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        assistant.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: FakeOpenAIResponse(
+            "Elena is your daughter. Would you like to see her picture?"
+        ),
+    )
+    app = create_app(tmp_path / "no-photo.db", seed=False)
+    with TestClient(app) as client:
+        _person(client, "Elena", "daughter")
+        response = client.post("/chat", json={"message": "Who is Elena?"}).json()
+
+    assert response["message"]["content"] == "Elena is your daughter."
+    assert response["grounded"] is True
