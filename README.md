@@ -183,7 +183,7 @@ Instead of relying on one coding agent, we divided the application into independ
 
 ```mermaid
 flowchart TB
-    S[“ Shared Contracts<br/>AGENTS.md · API.md · PLAN.md"]
+    S["Shared Contracts<br/>AGENTS.md · API.md · PLAN.md"]
 
     S --> A[" Codex<br/>Backend Engineer"]
     S --> B[" Claude Sonnet<br/>Companion Engineer"]
