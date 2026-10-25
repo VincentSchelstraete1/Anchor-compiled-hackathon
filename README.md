@@ -1,6 +1,6 @@
 <div align="center">
 
-#  Anchor
+# Anchor
 
 ### A memory companion that remembers with you.
 
@@ -16,7 +16,7 @@ Built at **c0mpiled-16 · UC San Diego · October 2026**
 ![Claude](https://img.shields.io/badge/Claude-AI_Agent-D97757)
 ![Git](https://img.shields.io/badge/Git-Worktrees-F05032?logo=git&logoColor=white)
 
-**[Features](#-the-experience) · [Architecture](#-architecture) · [AI Engineering](#-built-with-ai-agents) · [Setup](#-getting-started)**
+**[Product](#the-experience) · [Architecture](#architecture) · [Development](#how-we-built-it) · [Testing](#testing) · [Setup](#getting-started)**
 
 </div>
 
@@ -24,11 +24,11 @@ Built at **c0mpiled-16 · UC San Diego · October 2026**
 
 ## At a Glance
 
-**The problem:** 7.4 million Americans live with Alzheimer's, while millions of family caregivers struggle to provide constant support. Existing tools often require users to remember to open an app or ask for help.
+**The problem:** 7.4 million Americans live with Alzheimer's. Family caregivers cannot always be in the room, and many existing tools still depend on the person remembering to open an app and navigate it.
 
-**Our solution:** Anchor is a hands-free voice activated always-available companion that remembers important people, explains upcoming events, answers questions, and proactively provides reminders. Only need to be set up once through our online portal, Anchor is intended to work through a home-pod similar to Alexa, and contains functionality as a website through existing technology like on a computer.
+**Our solution:** Anchor gives a person a simple, voice-first companion at home. A caregiver adds trusted details about family, memories, medicine, routines, and upcoming events through a web dashboard. Anchor can then answer everyday questions, show a familiar photo, read reminders aloud, or ask a caregiver when the answer is not in the record.
 
-**How we built it:** We orchestrated three specialized AI coding agents—Codex and Claude Sonnet—working simultaneously in isolated Git worktrees, coordinated through shared API contracts and human-reviewed integration.
+The current prototype runs in a browser, with an interface designed for a shared home display. The same interaction model could later live on a dedicated device similar to a smart speaker with a screen.
 
 | Product | Technology | Development |
 |---|---|---|
@@ -87,6 +87,24 @@ Receive support naturally.
 </tr>
 </table>
 
+### Product Screens
+
+#### Companion display
+
+The companion keeps the current time, a familiar person, relevant memories, and the conversation in one large, readable view. Voice and typed input use the same grounded conversation flow.
+
+![Anchor companion showing Elena, an upcoming visit, a shared memory, and a spoken response](docs/images/anchor-companion.png)
+
+#### Caregiver dashboard
+
+Caregivers can update the information Anchor is allowed to use. Changes are stored in SQLite and become available to the companion through the backend API.
+
+| Memories | Medication details |
+|---|---|
+| ![Caregiver memory dashboard with family stories and familiar routines](docs/images/caregiver-memories.png) | ![Caregiver medication dashboard with dose, schedule, storage location, and refill date](docs/images/caregiver-medications.png) |
+
+![Caregiver schedule showing visits, reminders, and their current status](docs/images/caregiver-schedule.png)
+
 ### See Anchor in Action
 
 <details open>
@@ -96,11 +114,11 @@ Receive support naturally.
 
 **You:** "Who's coming over today?"
 
-**Anchor:** "Your daughter Sarah is visiting at 3 PM! Here's a picture of her."
+**Anchor:** "Your daughter Elena is scheduled to visit at 6:37 PM. I can show you her picture."
 
-*Sarah's photograph appears on the companion display.*
+*Elena's photograph appears on the companion display.*
 
-**At 2:30 PM:** "Sarah will be here in about 30 minutes!"
+Anchor describes this as a scheduled visit. It does not claim Elena has arrived unless that information is actually available.
 
 </details>
 
@@ -111,7 +129,7 @@ Receive support naturally.
 
 **You:** "What do I have planned today?"
 
-**Anchor:** "You have a doctor's appointment at 11 AM, and Sarah is visiting this afternoon."
+**Anchor:** "You have a doctor's appointment at 11 AM, and Elena is scheduled to visit this afternoon."
 
 *Information is retrieved from the caregiver-managed schedule.*
 
@@ -132,26 +150,26 @@ The question enters the caregiver handoff workflow rather than receiving an inve
 
 ---
 
-##  Architecture
+## Architecture
 
 ### How everything connects
 
 ```mermaid
 flowchart TB
-    subgraph UI[" Frontend"]
+    subgraph UI["Frontend"]
         A["Ambient Companion"]
         B["Caregiver Dashboard"]
     end
 
-    subgraph API[" FastAPI Backend"]
+    subgraph API["FastAPI Backend"]
         C["People & Events API"]
         D["Context Retrieval"]
         E["AI Response Engine"]
         F["Reminders & Handoffs"]
     end
 
-    G[(" SQLite")]
-    H[" AI Model"]
+    G[("SQLite")]
+    H["AI Model"]
 
     B <--> C
     A <--> D
@@ -167,38 +185,36 @@ flowchart TB
     style H fill:#ede9fe,stroke:#8b5cf6,color:#4c1d95
 ```
 
-**Core idea:** The AI doesn't have to invent someone's personal history. It retrieves relevant people, relationships, and events from structured caregiver-provided information before responding.
+The caregiver record is the source of truth for personal details. Before answering a personal question, the backend retrieves the relevant people, memories, medication records, events, and handoffs. If the record does not support an answer, Anchor says that it does not know and offers a caregiver handoff instead of filling in the gap.
 
 **Stack:** React · FastAPI · Python · SQLite · LLM APIs · Speech-to-Text · Text-to-Speech
 
 ---
 
-## Built With AI Agents
+## How We Built It
 
-### We didn't just build an AI product. We built it using a parallel AI engineering team.
+We split the work into three clear areas: backend, companion, and caregiver dashboard. Each area had its own branch and Git worktree, so work could happen in parallel without sharing an unfinished checkout.
 
-Instead of relying on one coding agent, we divided the application into independently developed components.
-
-### Three Agents. Three Worktrees. One Application.
+### Three worktrees, one codebase
 
 ```mermaid
 flowchart TB
     S["Shared Contracts<br/>AGENTS.md · API.md · PLAN.md"]
 
-    S --> A[" Codex<br/>Backend Engineer"]
-    S --> B[" Claude Sonnet<br/>Companion Engineer"]
-    S --> C[" Codex<br/>Caregiver Engineer"]
+    S --> A["Codex<br/>Backend"]
+    S --> B["Claude Sonnet<br/>Companion"]
+    S --> C["Codex<br/>Caregiver"]
 
-    A --> D[" anchor-backend"]
-    B --> E[" anchor-companion"]
-    C --> F[" anchor-caregiver"]
+    A --> D["anchor-backend"]
+    B --> E["anchor-companion"]
+    C --> F["anchor-caregiver"]
 
-    D --> G[" Human Integration"]
+    D --> G["Review and integration"]
     E --> G
     F --> G
 
-    G --> H[" Tests + Review"]
-    H --> I[" main"]
+    G --> H["Tests"]
+    H --> I["main"]
 
     style S fill:#ede9fe,stroke:#8b5cf6,color:#312e81
     style G fill:#fef3c7,stroke:#f59e0b,color:#78350f
@@ -212,7 +228,7 @@ flowchart TB
 | **Caregiver** | Dashboard, forms, handoffs | Codex |
 | **Integration** | Architecture, merges, testing | Human team |
 
-### ⚡ Why Git Worktrees?
+### Why Git worktrees?
 
 Each agent worked in an isolated checkout and branch, allowing simultaneous development without overwriting another agent's files.
 
@@ -228,7 +244,7 @@ anchor/                 ← Main integration
 `Specify → Delegate → Build in Parallel → Review → Merge Sequentially → Test`
 
 <details>
-<summary><b>🔍 Explore our AI engineering process</b></summary>
+<summary><b>How the development process worked</b></summary>
 
 <br>
 
@@ -242,7 +258,7 @@ Each agent developed its assigned subsystem in a separate Git worktree.
 
 **3. Independent verification**
 
-Backend tests, frontend builds, and browser testing helped identify issues before integration.
+Each branch was checked in its own worktree before it was handed back for integration.
 
 **4. Sequential integration**
 
@@ -250,17 +266,15 @@ Changes were reviewed and merged one component at a time.
 
 **5. Human validation**
 
-Our team tested real interactions, resolved integration issues, and prioritized the final experience.
+We walked through the real caregiver and companion flows, resolved conflicts by file ownership, and kept the demo focused on interactions we could verify.
 
-**Key principle:** Agents work in parallel. Integration happens sequentially.
+The branches were developed in parallel but merged one at a time: shared work, backend, companion, caregiver, then integration fixes.
 
 </details>
 
- **Learn more:** [Git Worktrees Documentation](https://git-scm.com/docs/git-worktree?utm_source=chatgpt.com) · [OpenAI Codex](https://openai.com/codex/?utm_source=chatgpt.com) · [Claude](https://claude.ai/?utm_source=chatgpt.com)
-
 ---
 
-##  Technical Highlights
+## Technical Highlights
 
 | System | Implementation |
 |---|---|
@@ -270,18 +284,18 @@ Our team tested real interactions, resolved integration issues, and prioritized 
 | **Voice** | Speech recognition and spoken responses |
 | **Proactive reminders** | Time-based event awareness and reminder announcements |
 | **Caregiver handoffs** | Escalation path for missing information |
-| **Verification** | pytest, Playwright, frontend builds, and manual testing |
+| **Verification** | pytest, companion logic tests, Playwright browser checks, linting, type checks, and production builds |
 | **Parallel development** | Independent Git worktrees with shared API contracts |
 
 ### The response pipeline
 
 ```mermaid
 flowchart LR
-    A[" Question"] --> B["🔎 Retrieve Context"]
+    A["Question"] --> B["Retrieve context"]
     B --> C{"Information Available?"}
-    C -->|Yes| D[" Grounded Response"]
-    C -->|No| E[" Caregiver Handoff"]
-    D --> F[" Voice + Display"]
+    C -->|Yes| D["Grounded response"]
+    C -->|No| E["Caregiver handoff"]
+    D --> F["Voice and display"]
 
     style D fill:#dcfce7,stroke:#22c55e,color:#14532d
     style E fill:#fef3c7,stroke:#f59e0b,color:#78350f
@@ -289,29 +303,70 @@ flowchart LR
 
 ---
 
-##  Getting Started
+## Testing
+
+We tested the project at several levels:
+
+- **Backend API and safety behavior:** pytest covers CRUD operations, validation, SQLite persistence, grounded conversation routing, medication boundaries, reminders, handoffs, and caregiver communication state changes.
+- **Companion behavior:** Node tests cover voice output and fallback behavior, interruption, reminder queues, acknowledgement state, daily check-ins, and context selection.
+- **Frontend checks:** ESLint, TypeScript, and the Next.js production build catch code, type, and bundling problems.
+- **Browser flows:** We used Playwright-driven Chromium sessions during integration to exercise the caregiver dashboard and companion together, including photo display, typed input, reminders, navigation, and calls to the local backend. These were integration smoke checks rather than a committed Playwright test suite.
+- **OpenAI integration:** opt-in live tests verify grounded response generation and caregiver action planning when credentials are available. Text-to-speech was also checked against the real endpoint, with browser speech kept as a fallback.
 
 ```bash
-# Clone the project
-git clone <REPOSITORY_URL>
-cd anchor
+cd backend
+uv run ruff check .
+uv run pytest
+
+cd ../frontend
+npm run lint
+npx tsc --noEmit
+npm run build
+node --test src/components/companion/logic/__tests__/*.test.mjs
 ```
-
-Configure the backend environment, install the Python and frontend dependencies, and start the application using the scripts included in the repository.
-
-*Exact installation and startup commands will be added after final integration.*
 
 ---
 
-##  Why It Matters
+## Getting Started
 
-Anchor explores how ambient AI can make everyday technology more accessible for people experiencing cognitive decline.
+```bash
+git clone https://github.com/VincentSchelstraete1/Anchor-compiled-hackathon.git
+cd Anchor-compiled-hackathon
+```
 
-Our goal is to help people maintain independence, reduce repetitive coordination for caregivers, and keep loved ones connected.
+### Backend
+
+```bash
+cd backend
+cp .env.example .env
+uv sync
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Add `OPENAI_API_KEY` to `backend/.env` to enable OpenAI conversation and text-to-speech calls. Without it, the backend still runs and the companion can fall back to browser speech.
+
+Check the API at [http://localhost:8000/health](http://localhost:8000/health) or open [http://localhost:8000/docs](http://localhost:8000/docs).
+
+### Frontend
+
+```bash
+cd frontend
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). The frontend reads `NEXT_PUBLIC_API_URL` and defaults to `http://localhost:8000`.
+
+---
+
+## Why It Matters
+
+Anchor is meant to make common questions easier to answer without turning every moment into a phone call or another app to navigate. It gives caregivers one place to keep information current and gives their loved one a calmer way to reach it.
 
 **Anchor supplements human caregiving. It does not replace it.**
 
-### What's Next?
+### What we would build next
 
 `Wake-word activation` · `Family voice recordings` · `Offline support` · `Shared caregiver accounts` · `Richer personal memories`
 
@@ -319,20 +374,6 @@ Our goal is to help people maintain independence, reduce repetitive coordination
 
 <div align="center">
 
-###  Built at c0mpiled-16
-
-**UC San Diego · October 24, 2026**
-
-*No App*
-
-[Hackathon Event](https://luma.com/compiled-im3b?utm_source=chatgpt.com) · [Community Discord](https://discord.gg/R59XBUBN6?utm_source=chatgpt.com)
-
----
-
-### Anchor
-
-**A little more independence. A little more connection. Every day.**
-
-*Built by humans and AI agents, for the people who matter most.*
+Built at **c0mpiled-16**, UC San Diego — October 24, 2026.
 
 </div>
