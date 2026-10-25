@@ -29,6 +29,11 @@ const CSS = `
   .anchor-clock { font-size: clamp(3rem, min(12vh, 16cqw), 9rem) }
   .anchor-clamp { -webkit-line-clamp: 2 }
 }
+/* A proactive card or schedule is on screen: shrink the clock and drop the one-line summary so the card has room. */
+@media (min-width: 1024px) {
+  [data-focus="true"] .anchor-clock { font-size: clamp(2.5rem, min(8vh, 11cqw), 5rem) }
+  [data-focus="true"] .anchor-narrative { display: none }
+}
 @media (prefers-reduced-motion: no-preference) {
   .anchor-ring { animation: anchor-breathe 2.8s ease-out infinite }
   .anchor-ring-2 { animation-delay: 1.4s }
@@ -36,7 +41,7 @@ const CSS = `
 }
 `;
 
-export function AmbientDisplay({ tod, stateName, children }: { tod: TimeOfDay; stateName: string; children: ReactNode }) {
+export function AmbientDisplay({ tod, stateName, focus = false, children }: { tod: TimeOfDay; stateName: string; focus?: boolean; children: ReactNode }) {
   const p = PALETTES[tod];
   const vars = {
     "--a-bg": p.bg, "--a-fg": p.fg, "--a-muted": p.muted, "--a-card": p.card, "--a-border": p.border,
@@ -47,6 +52,7 @@ export function AmbientDisplay({ tod, stateName, children }: { tod: TimeOfDay; s
     <main
       data-tod={tod}
       data-state={stateName}
+      data-focus={focus}
       style={vars}
       className="anchor-shell grid min-h-dvh gap-5 p-4 sm:p-6 lg:gap-8 lg:p-8 [font-family:Arial,Helvetica,sans-serif]"
     >

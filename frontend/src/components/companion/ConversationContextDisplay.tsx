@@ -1,12 +1,15 @@
 "use client";
 
-import { Bell, Hourglass, MessageCircleQuestion, Send } from "lucide-react";
+import { Hourglass, MessageCircleQuestion, Send } from "lucide-react";
 import type { Event, Memory, Person } from "@/lib/api/types";
 import type { Scene } from "./logic/ambient-state";
 import { SERIF } from "./AmbientDisplay";
 import { Fade } from "./Fade";
 import { MemorySpotlight } from "./MemorySpotlight";
+import { DayAgenda } from "./DayAgenda";
+import { ReminderCard } from "./ReminderCard";
 import { EventCard, UpcomingEvents } from "./UpcomingEvents";
+import { buildDay, routineMemories } from "./logic/briefing";
 import { useNow } from "./useNow";
 
 export interface ConsentView {
@@ -21,11 +24,16 @@ interface Props {
   people: Person[];
   events: Event[];
   homeMemory: Memory | null;
+  memories: Memory[];
   pendingCaregiver: Person | null;
   consent: ConsentView | null;
   onAskCaregiver: (personId: number) => void;
   onDecline: () => void;
   onAcknowledge: () => void;
+  onTellMore: (person: Person) => void;
+  onTalk: () => void;
+  onHear: () => void;
+  canHear: boolean;
 }
 
 const card = "rounded-3xl border border-[var(--a-border)] bg-[var(--a-card)] p-5";
@@ -35,25 +43,34 @@ const button =
   "min-h-14 rounded-2xl px-5 text-xl font-semibold outline-offset-4 focus-visible:outline-4 focus-visible:outline-[var(--a-sage)]";
 
 export function ConversationContextDisplay(props: Props) {
-  const { scene, people, events, homeMemory, pendingCaregiver, consent, onAskCaregiver, onDecline, onAcknowledge } = props;
+  const { scene, people, events, homeMemory, memories, pendingCaregiver, consent, onAskCaregiver, onDecline, onAcknowledge, onTellMore, onTalk, onHear, canHear } = props;
   const now = useNow();
   const personFor = (id: number | null) => people.find((p) => p.id === id) ?? null;
 
   let content;
   switch (scene.kind) {
-    case "person":
+    case "person": {
+      const related = [scene.memory, ...memories.filter((m) => m.person_id === scene.person.id && m.id !== scene.memory?.id)]
+        .filter((m): m is Memory => m !== null)
+        .slice(0, 2);
       content = (
-        <div className="space-y-3">
-          {scene.memory ? <MemorySpotlight memory={scene.memory} person={scene.person} /> : null}
+        <div className="space-y-3" data-testid="person-card">
+          {related.map((m) => (
+            <MemorySpotlight key={m.id} memory={m} person={scene.person} />
+          ))}
           {scene.event ? (
             <section aria-label="Next visit" className={card}>
               <EventCard event={scene.event} person={scene.person} now={now} />
             </section>
           ) : null}
-          {!scene.memory && !scene.event ? <p className="text-2xl text-[var(--a-muted)]">That&apos;s {scene.person.name}.</p> : null}
+          {related.length === 0 && !scene.event ? <p className="text-2xl text-[var(--a-muted)]">That&apos;s {scene.person.name}.</p> : null}
+          <button type="button" onClick={() => onTellMore(scene.person)} className={`${button} bg-[var(--a-sage)] text-[var(--a-on-accent)]`}>
+            Tell me more about {scene.person.name}
+          </button>
         </div>
       );
       break;
+    }
     case "memory":
       content = <MemorySpotlight memory={scene.memory} person={scene.person} />;
       break;
@@ -70,21 +87,25 @@ export function ConversationContextDisplay(props: Props) {
       break;
     case "reminder":
       content = (
-        <section aria-label="Reminder" className="rounded-3xl bg-[var(--a-terra-soft)] p-5">
-          <div className="flex items-center justify-between gap-4">
-            <h3 className={`${label} text-[var(--a-terra)]`}>
-              <Bell aria-hidden="true" className="size-6" />
-              Reminder
-            </h3>
-            <button type="button" onClick={onAcknowledge} className={`${button} bg-[var(--a-terra)] text-[var(--a-on-accent)]`}>
-              Got it
-            </button>
-          </div>
-          <div className="mt-3">
-            <EventCard event={scene.event} person={scene.person} now={now} />
-          </div>
-        </section>
+        <ReminderCard
+          event={scene.event}
+          person={scene.person}
+          now={now}
+          demo={scene.demo}
+          canHear={canHear}
+          onThanks={onAcknowledge}
+          onTellMore={scene.person ? () => onTellMore(scene.person!) : undefined}
+          onHear={onHear}
+        />
       );
+      break;
+    case "checkin":
+      content = (
+        <ReminderCard event={null} person={null} checkInMessage={scene.message} now={now} demo={scene.demo} canHear={canHear} onThanks={onAcknowledge} onTellMore={onTalk} onHear={onHear} />
+      );
+      break;
+    case "day":
+      content = now ? <DayAgenda mode={scene.mode} items={buildDay(events, people, now, scene.mode)} routines={routineMemories(memories)} /> : null;
       break;
     case "uncertain":
       content = (

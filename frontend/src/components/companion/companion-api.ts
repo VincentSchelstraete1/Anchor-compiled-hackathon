@@ -6,8 +6,15 @@ import type {
   ListResponse,
   SpeechRequest,
 } from "@/lib/api/types";
+import { resolvePhotoUrl } from "@/lib/api/photos";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+/** Uploaded photos come back as root-relative paths served by the API. */
+export function resolveMediaUrl(url: string | null): string | null {
+  if (!url) return null;
+  return resolvePhotoUrl(url);
+}
 
 /**
  * Proposed, not yet in docs/API.md: the backend names the caregiver it would ask, so the client never has to
@@ -88,5 +95,24 @@ export async function fetchSpeechAudio(text: string, signal: AbortSignal): Promi
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", forward);
+  }
+}
+
+/**
+ * Proposed, not yet in docs/API.md: GET /checkins -> { items: [{ id, time: "HH:MM", message?, days? }] }.
+ * Returns null when the endpoint does not exist (404) so the caller stops asking; [] on transient errors.
+ */
+export async function getCheckIns(): Promise<unknown | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(`${BASE_URL}/checkins`, { signal: controller.signal });
+    if (response.status === 404) return null;
+    if (!response.ok) return [];
+    return await response.json();
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
   }
 }
