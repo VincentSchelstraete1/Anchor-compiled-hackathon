@@ -90,6 +90,22 @@ export interface HandoffCreate {
 }
 export interface HandoffAnswer { response: string; }
 
+export type AssistanceRequestType = "text" | "call" | "caregiver_assistance" | "urgent_help";
+export type AssistanceRequestStatus = "proposed" | "confirmed" | "simulated" | "cancelled";
+export interface AssistanceRequest {
+  id: number;
+  request_type: AssistanceRequestType;
+  recipient_person_id: number | null;
+  intended_recipient: string;
+  reason: string;
+  proposed_content: string;
+  status: AssistanceRequestStatus;
+  created_at: ISODateTime;
+  confirmed_at: ISODateTime | null;
+  simulated_at: ISODateTime | null;
+  cancelled_at: ISODateTime | null;
+}
+
 export type ConversationRole = "user" | "assistant";
 export interface ConversationMessage {
   id: number;

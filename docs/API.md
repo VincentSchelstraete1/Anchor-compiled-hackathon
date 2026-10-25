@@ -292,6 +292,42 @@ The referenced caregiver is a `Person`. `question` and `response` have a 2,000-c
 
 Repeated or out-of-order state transitions return `409` and the existing handoff remains unchanged. `response`, `answered_at`, and `delivered_at` are server-controlled and cannot be changed by generic update endpoints; no generic handoff `PATCH` or `DELETE` exists.
 
+## Assistance requests (expected backend contract)
+
+The caregiver frontend consumes this read-only contract for persisted communication-action records. These actions are simulations only; this API must not send an SMS, place a call, contact emergency services, or describe a simulation as a completed real-world action.
+
+```ts
+type AssistanceRequestType = "text" | "call" | "caregiver_assistance" | "urgent_help";
+type AssistanceRequestStatus = "proposed" | "confirmed" | "simulated" | "cancelled";
+
+interface AssistanceRequest {
+  id: number;
+  request_type: AssistanceRequestType;
+  recipient_person_id: number | null;
+  intended_recipient: string;
+  reason: string;
+  proposed_content: string;
+  status: AssistanceRequestStatus;
+  created_at: string;
+  confirmed_at: string | null;
+  simulated_at: string | null;
+  cancelled_at: string | null;
+}
+```
+
+`intended_recipient` is the display name captured with the action so its audit history remains understandable if a person record later changes. `recipient_person_id` links to a `Person` when applicable. `reason` and `proposed_content` have a 2,000-character maximum. Status transitions are backend-controlled.
+
+- `GET /assistance-requests` → `200 { "items": AssistanceRequest[] }`, newest first.
+- `GET /assistance-requests/{request_id}` → `200 AssistanceRequest`.
+- `POST /assistance-requests` with `{ "request_type", "recipient_person_id", "intended_recipient", "reason", "proposed_content" }` → `201 AssistanceRequest` in `proposed` state.
+- `POST /assistance-requests/{request_id}/confirm` → `200 AssistanceRequest`; valid only from `proposed` and records `confirmed_at`.
+- `POST /assistance-requests/{request_id}/simulate` → `200 AssistanceRequest`; valid only from `confirmed` and records `simulated_at`. This records a simulation and performs no external action.
+- `POST /assistance-requests/{request_id}/cancel` → `200 AssistanceRequest`; valid from `proposed` or `confirmed` and records `cancelled_at`.
+
+Legal terminal states are `simulated` and `cancelled`. Repeated or out-of-order transitions return `409` without changing the record.
+
+The companion-created record must be visible from these endpoints immediately after persistence. A `simulated` record means only that Anchor recorded the simulation; it does not represent real-world contact.
+
 ## Local CORS
 
 By default the API accepts credentialed requests from `http://localhost:3000` and `http://127.0.0.1:3000`. Override the comma-separated allowlist with `ANCHOR_FRONTEND_ORIGINS`. The frontend API base URL is `NEXT_PUBLIC_API_URL` and defaults in development to `http://localhost:8000`.
