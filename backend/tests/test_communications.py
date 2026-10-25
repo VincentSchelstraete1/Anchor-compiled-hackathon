@@ -1,10 +1,11 @@
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import assistant
+from app import assistant, communications
 from app.main import create_app
 
 
@@ -21,19 +22,38 @@ def person(
     name: str = "Elena",
     relationship: str = "daughter",
     approved: bool = True,
+    description: str | None = None,
 ) -> dict:
     response = client.post(
         "/people",
         json={
             "name": name,
             "relationship": relationship,
-            "description": "Primary caregiver" if approved else "Family acquaintance",
+            "description": description
+            if description is not None
+            else ("Primary caregiver" if approved else "Family acquaintance"),
             "photo_url": None,
             "contact_approved": approved,
         },
     )
     assert response.status_code == 201
     return response.json()
+
+
+class FakePlanResponse:
+    def __init__(self, plan: dict) -> None:
+        self.body = json.dumps(
+            {"choices": [{"message": {"content": json.dumps(plan)}}]}
+        ).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
 
 
 def test_text_proposal_collects_content_confirms_and_only_simulates(
@@ -136,7 +156,9 @@ def test_urgent_flag_never_delays_or_claims_emergency_contact(client: TestClient
 def test_ordinary_conversation_does_not_create_actions(client: TestClient) -> None:
     person(client)
     for message in ("I'm feeling lonely.", "I'm confused.", "Who is Elena?"):
-        assert client.post("/chat", json={"message": message}).status_code == 200
+        response = client.post("/chat", json={"message": message})
+        assert response.status_code == 200
+        assert response.json()["action"] is None
     assert client.get("/communication-actions").json()["items"] == []
 
 
@@ -289,3 +311,267 @@ def test_existing_people_are_migrated_without_losing_caregiver_approval(
     assert people[0]["contact_approved"] is True
     assert people[1]["name"] == "Thomas"
     assert people[1]["contact_approved"] is False
+
+
+def test_implicit_refill_uses_model_plan_and_returns_proposal_with_response(
+    client: TestClient, monkeypatch
+) -> None:
+    office = person(
+        client,
+        name="Dr. Chen's Office",
+        relationship="prescribing office",
+        description="Verified medical office for prescription refills.",
+    )
+    captured: dict = {}
+    plan = {
+        "should_propose": True,
+        "need_type": "MEDICATION_REFILL",
+        "reason": "Margaret may need a prescription refill.",
+        "proposed_content": "Ask whether a refill can be arranged.",
+        "response": (
+            "Thanks for telling me. I can help prepare a refill request for Dr. Chen's Office. "
+            "Would you like me to prepare it?"
+        ),
+    }
+
+    def fake_urlopen(request, timeout: int):
+        payload = json.loads(request.data)
+        captured.update(json.loads(payload["messages"][-1]["content"]))
+        return FakePlanResponse(plan)
+
+    monkeypatch.setattr(communications, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(communications.urllib.request, "urlopen", fake_urlopen)
+    response = client.post(
+        "/chat", json={"message": "I think I'm running out of my medicine."}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["message"]["content"] == plan["response"]
+    assert "Intent detected" not in body["message"]["content"]
+    assert body["action"]["status"] == "PROPOSED"
+    assert body["action"]["action_type"] == "CALL_REQUESTED"
+    assert body["action"]["recipient_person_id"] == office["id"]
+    assert body["action"]["proposed_content"] == plan["proposed_content"]
+    assert body["action"]["execution_status"] == "NOT_EXECUTED"
+    assert captured["candidate_need"] == "MEDICATION_REFILL"
+    assert captured["verified_recipient"]["id"] == office["id"]
+
+    confirmed = client.post("/chat", json={"message": "Yes."}).json()
+    assert confirmed["action"]["status"] == "SIMULATED"
+    assert "hasn't been placed" in confirmed["message"]["content"]
+
+
+def test_repeated_implicit_refill_reuses_unresolved_proposal(
+    client: TestClient, monkeypatch
+) -> None:
+    office = person(
+        client,
+        name="Lakeview Pharmacy",
+        relationship="pharmacy",
+        description="Approved pharmacy contact.",
+    )
+    calls = 0
+
+    def fake_urlopen(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return FakePlanResponse(
+            {
+                "should_propose": True,
+                "need_type": "MEDICATION_REFILL",
+                "reason": "A refill may be needed.",
+                "proposed_content": "Ask about a prescription refill.",
+                "response": "I can prepare a refill inquiry for Lakeview Pharmacy. Shall I?",
+            }
+        )
+
+    monkeypatch.setattr(communications, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(communications.urllib.request, "urlopen", fake_urlopen)
+    action_ids = []
+    for message in (
+        "I'm almost out of my pills.",
+        "I think I'm running out of my medicine.",
+        "I need more of my prescription.",
+    ):
+        body = client.post("/chat", json={"message": message}).json()
+        action_ids.append(body["action"]["id"])
+
+    assert action_ids == [action_ids[0]] * 3
+    assert calls == 1
+    actions = client.get("/communication-actions").json()["items"]
+    assert len(actions) == 1
+    assert actions[0]["recipient_person_id"] == office["id"]
+
+
+def test_unsafe_model_execution_claim_is_rejected(client: TestClient, monkeypatch) -> None:
+    office = person(
+        client,
+        name="Lakeview Pharmacy",
+        relationship="pharmacy",
+        description="Approved pharmacy contact.",
+    )
+    monkeypatch.setattr(communications, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        communications.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: FakePlanResponse(
+            {
+                "should_propose": True,
+                "need_type": "MEDICATION_REFILL",
+                "reason": "A refill is needed.",
+                "proposed_content": "Request a refill.",
+                "response": "I sent the refill request to Lakeview Pharmacy.",
+            }
+        ),
+    )
+    body = client.post(
+        "/chat", json={"message": "I think I'm running out of my medicine."}
+    ).json()
+    assert body["message"]["content"] == (
+        "I can help prepare that request for Lakeview Pharmacy. Would you like me to?"
+    )
+    assert body["action"]["recipient_person_id"] == office["id"]
+    assert body["action"]["status"] == "PROPOSED"
+    assert body["action"]["execution_status"] == "NOT_EXECUTED"
+
+
+def test_medication_location_uses_storage_note_before_proposing_help(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(communications, "OPENAI_API_KEY", "")
+    memory = client.post(
+        "/memories",
+        json={
+            "person_id": None,
+            "title": "Medication storage",
+            "content": "The medicine is kept in the labeled kitchen cabinet.",
+            "category": "location",
+        },
+    ).json()
+    body = client.post("/chat", json={"message": "I can't find my medicine."}).json()
+    assert "labeled kitchen cabinet" in body["message"]["content"]
+    assert body["grounded"] is True
+    assert body["sources"] == [{"type": "memory", "id": memory["id"]}]
+    assert body["action"] is None
+    assert client.get("/communication-actions").json()["items"] == []
+
+
+def test_missing_medication_without_storage_proposes_caregiver_help(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(communications, "OPENAI_API_KEY", "")
+    caregiver = person(client, description="Approved primary caregiver")
+    body = client.post("/chat", json={"message": "I can't find my pills."}).json()
+    assert "don't have a verified storage location" in body["message"]["content"]
+    assert body["action"]["action_type"] == "CAREGIVER_ASSISTANCE"
+    assert body["action"]["recipient_person_id"] == caregiver["id"]
+    assert body["action"]["status"] == "PROPOSED"
+
+
+def test_appointment_and_family_needs_select_relevant_contacts(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(communications, "OPENAI_API_KEY", "")
+    office = person(
+        client,
+        name="Dr. Chen's Office",
+        relationship="medical office",
+        description="Approved clinic scheduling contact.",
+    )
+    sophie = person(
+        client,
+        name="Sophie",
+        relationship="sister",
+        description="Approved family contact.",
+    )
+    appointment = client.post(
+        "/chat", json={"message": "I can't make it to my doctor tomorrow."}
+    ).json()
+    assert appointment["action"]["recipient_person_id"] == office["id"]
+    assert appointment["action"]["action_type"] == "CALL_REQUESTED"
+    client.post(
+        f"/communication-actions/{appointment['action']['id']}/cancel"
+    )
+
+    family = client.post(
+        "/chat", json={"message": "I wish I could talk to Sophie."}
+    ).json()
+    assert family["action"]["recipient_person_id"] == sophie["id"]
+    assert family["action"]["action_type"] == "CALL_REQUESTED"
+    assert "Sophie" in family["message"]["content"]
+
+
+def test_refill_does_not_default_to_nonmedical_caregiver(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(communications, "OPENAI_API_KEY", "")
+    person(client, name="Elena", relationship="daughter", description="Primary caregiver")
+    body = client.post(
+        "/chat", json={"message": "I need more of my prescription."}
+    ).json()
+    assert body["action"] is None
+    assert "verified prescribing office or medical contact" in body["message"]["content"]
+    assert client.get("/communication-actions").json()["items"] == []
+
+
+def test_ambiguous_medical_contacts_require_clarification(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(communications, "OPENAI_API_KEY", "")
+    person(
+        client,
+        name="North Pharmacy",
+        relationship="pharmacy",
+        description="Approved pharmacy contact.",
+    )
+    person(
+        client,
+        name="South Pharmacy",
+        relationship="pharmacy",
+        description="Approved pharmacy contact.",
+    )
+    body = client.post(
+        "/chat", json={"message": "I think I'm running out of my pills."}
+    ).json()
+    assert body["action"] is None
+    assert "Which approved contact" in body["message"]["content"]
+    assert client.get("/communication-actions").json()["items"] == []
+
+
+def test_unapproved_named_office_is_not_replaced_with_another_contact(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(communications, "OPENAI_API_KEY", "")
+    person(
+        client,
+        name="Lakeview Pharmacy",
+        relationship="pharmacy",
+        description="Approved pharmacy contact.",
+    )
+    person(
+        client,
+        name="Dr. Gray's Office",
+        relationship="prescribing office",
+        description="Not approved for communication.",
+        approved=False,
+    )
+    body = client.post(
+        "/chat",
+        json={"message": "I'm running out of medicine from Dr. Gray's Office."},
+    ).json()
+    assert body["action"] is None
+    assert "Which approved contact" in body["message"]["content"]
+    assert client.get("/communication-actions").json()["items"] == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["I'm having trouble with something.", "I need some help."],
+)
+def test_ambiguous_help_asks_for_clarification_without_action(
+    client: TestClient, message: str
+) -> None:
+    body = client.post("/chat", json={"message": message}).json()
+    assert "what kind of help" in body["message"]["content"].lower()
+    assert body["action"] is None
+    assert client.get("/communication-actions").json()["items"] == []

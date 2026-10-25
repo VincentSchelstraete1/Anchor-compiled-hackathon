@@ -1039,8 +1039,21 @@ def create_app(
         handoffs = [_row(row) for row in db.execute("SELECT * FROM handoffs").fetchall()]
         timezone = str(get_settings(db)["timezone"])
         communication = process_communication_turn(db, payload.message, user_cursor.lastrowid)
+        response_action = None
         if communication is not None:
-            result = AssistantResult(communication.content, False, [], False)
+            result = AssistantResult(
+                communication.content,
+                communication.grounded,
+                communication.sources,
+                False,
+            )
+            if communication.action_id is not None:
+                action_row = db.execute(
+                    "SELECT * FROM communication_actions WHERE id = ?",
+                    (communication.action_id,),
+                ).fetchone()
+                if action_row is not None:
+                    response_action = _communication_action(action_row)
         else:
             result = answer_message(
                 payload.message,
@@ -1070,6 +1083,7 @@ def create_app(
             grounded=result.grounded,
             sources=result.sources,
             handoff_offered=result.handoff_offered,
+            action=response_action,
         )
 
     @application.post("/speech", response_class=Response)

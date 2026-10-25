@@ -1,8 +1,12 @@
+import json
 import re
 import sqlite3
-from dataclasses import dataclass
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
 from typing import Any
 
+from app.config import OPENAI_API_KEY, OPENAI_MODEL
 from app.db import utc_text
 
 ACTION_TYPES = {
@@ -43,12 +47,65 @@ ASSISTANCE_PHRASES = {
     "i need someone to help",
     "please ask my caregiver for help",
 }
+MEDICATION_WORDS = {"medicine", "medication", "medications", "pill", "pills", "prescription"}
+REFILL_PHRASES = {"almost out", "need a refill", "need more", "running low", "running out"}
+LOCATION_PHRASES = {"can t find", "cannot find", "don t know where", "lost", "where is"}
+APPOINTMENT_CHANGE_PHRASES = {
+    "can t make it",
+    "cannot make it",
+    "change my appointment",
+    "miss my appointment",
+    "move my appointment",
+    "reschedule",
+}
+FAMILY_CONTACT_PHRASES = {
+    "haven t spoken",
+    "miss talking",
+    "want to talk to",
+    "wish i could talk",
+}
+GENERAL_HELP_PHRASES = {
+    "i am having trouble with something",
+    "i m having trouble with something",
+    "i need help",
+    "i need some help",
+    "please help me",
+}
+MEDICAL_CONTACT_WORDS = {
+    "clinic",
+    "doctor",
+    "medical",
+    "office",
+    "pharmacist",
+    "pharmacy",
+    "physician",
+    "prescriber",
+    "prescribing",
+}
+UNSAFE_COMPLETION_PHRASES = {
+    "already called",
+    "already contacted",
+    "already sent",
+    "has been called",
+    "has been sent",
+    "i called",
+    "i contacted",
+    "i sent",
+    "i have called",
+    "i have sent",
+    "i ve called",
+    "i ve sent",
+    "message was sent",
+    "call was placed",
+}
 
 
 @dataclass
 class CommunicationTurnResult:
     content: str
     action_id: int | None = None
+    grounded: bool = False
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
 
 def normalize(value: str) -> str:
@@ -59,6 +116,18 @@ def _approved_people(database: sqlite3.Connection) -> list[sqlite3.Row]:
     return database.execute(
         "SELECT * FROM people WHERE contact_approved = 1 ORDER BY id"
     ).fetchall()
+
+
+def _caregiver_contact(database: sqlite3.Connection) -> sqlite3.Row | None:
+    return next(
+        (
+            person
+            for person in _approved_people(database)
+            if "caregiver"
+            in normalize(f"{person['relationship']} {person['description']}").split()
+        ),
+        None,
+    )
 
 
 def _mentioned_person(
@@ -315,13 +384,391 @@ def _proposal_prompt(action_type: str, recipient_name: str, has_content: bool) -
     return f"Would you like me to prepare that {noun} for {recipient_name}?"
 
 
+def _recent_context(database: sqlite3.Connection) -> list[dict[str, str]]:
+    rows = database.execute(
+        """SELECT role, content FROM (
+            SELECT id, role, content FROM conversation_messages ORDER BY id DESC LIMIT 8
+        ) ORDER BY id"""
+    ).fetchall()
+    return [{"role": row["role"], "content": row["content"]} for row in rows]
+
+
+def _implicit_need(message: str, history: list[dict[str, str]]) -> str | None:
+    normalized = normalize(message)
+    words = set(normalized.split())
+    prior_user_text = " ".join(
+        normalize(item["content"]) for item in history[-4:] if item["role"] == "user"
+    )
+    context_words = set(f"{prior_user_text} {normalized}".split())
+    medication_context = bool(context_words & MEDICATION_WORDS)
+    if medication_context and any(phrase in normalized for phrase in LOCATION_PHRASES):
+        return "MEDICATION_LOCATION"
+    if medication_context and (
+        any(phrase in normalized for phrase in REFILL_PHRASES) or "refill" in words
+    ):
+        return "MEDICATION_REFILL"
+    appointment_context = "appointment" in context_words or bool(
+        context_words & {"clinic", "doctor"}
+    )
+    if appointment_context and any(
+        phrase in normalized for phrase in APPOINTMENT_CHANGE_PHRASES
+    ):
+        return "APPOINTMENT_CHANGE"
+    if any(phrase in normalized for phrase in FAMILY_CONTACT_PHRASES):
+        return "FAMILY_CONTACT"
+    return None
+
+
+def _medical_contact(
+    database: sqlite3.Connection, message: str, history: list[dict[str, str]]
+) -> sqlite3.Row | None:
+    approved = _approved_people(database)
+    context = " ".join([message, *(item["content"] for item in history[-4:])])
+    normalized_context = normalize(context)
+
+    def is_medical(person: sqlite3.Row) -> bool:
+        searchable = set(
+            normalize(f"{person['relationship']} {person['description']}").split()
+        )
+        return bool(searchable & MEDICAL_CONTACT_WORDS)
+
+    all_people = database.execute("SELECT * FROM people ORDER BY id").fetchall()
+    prior_users = [item["content"] for item in history if item["role"] == "user"]
+    for candidate in [message, *reversed(prior_users[:-1])]:
+        padded = f" {normalize(candidate)} "
+        named = next(
+            (
+                person
+                for person in all_people
+                if f" {normalize(person['name'])} " in padded
+            ),
+            None,
+        )
+        if named is not None:
+            return named if named["contact_approved"] and is_medical(named) else None
+
+    def score(person: sqlite3.Row) -> int:
+        searchable = normalize(
+            f"{person['name']} {person['relationship']} {person['description']}"
+        )
+        role_matches = len(set(searchable.split()) & MEDICAL_CONTACT_WORDS)
+        explicit = 10 if normalize(person["name"]) in normalized_context else 0
+        prescribing = 5 if "prescrib" in searchable else 0
+        return explicit + prescribing + role_matches
+
+    candidates = [person for person in approved if is_medical(person) and score(person) > 0]
+    if not candidates:
+        return None
+    highest = max(score(person) for person in candidates)
+    best = [person for person in candidates if score(person) == highest]
+    return best[0] if len(best) == 1 else None
+
+
+def _family_contact(
+    database: sqlite3.Connection, message: str, history: list[dict[str, str]]
+) -> sqlite3.Row | None:
+    approved = _approved_people(database)
+    prior_users = [item["content"] for item in history if item["role"] == "user"]
+    candidates = [message, *reversed(prior_users[:-1])]
+    for candidate in candidates:
+        normalized = normalize(candidate)
+        padded = f" {normalized} "
+        named = next(
+            (
+                person
+                for person in approved
+                if f" {normalize(person['name'])} " in padded
+            ),
+            None,
+        )
+        if named:
+            return named
+        relationship_matches = [
+            person
+            for person in approved
+            if set(normalize(person["relationship"]).split()) & set(normalized.split())
+        ]
+        if len(relationship_matches) == 1:
+            return relationship_matches[0]
+    return None
+
+
+def _medication_storage_memory(database: sqlite3.Connection) -> sqlite3.Row | None:
+    rows = database.execute(
+        "SELECT * FROM memories ORDER BY created_at DESC, id DESC"
+    ).fetchall()
+    storage_words = {"cabinet", "drawer", "kept", "location", "shelf", "store", "stored"}
+    return next(
+        (
+            row
+            for row in rows
+            if set(normalize(f"{row['title']} {row['category']} {row['content']}").split())
+            & storage_words
+            and set(normalize(row["content"]).split()) & MEDICATION_WORDS
+        ),
+        None,
+    )
+
+
+def _unresolved_issue_action(
+    database: sqlite3.Connection,
+    *,
+    action_type: str,
+    recipient_person_id: int,
+    reason_prefix: str,
+) -> sqlite3.Row | None:
+    return database.execute(
+        """SELECT * FROM communication_actions WHERE action_type = ?
+        AND recipient_person_id = ? AND reason LIKE ?
+        AND status IN ('PROPOSED', 'CONFIRMED') ORDER BY id DESC LIMIT 1""",
+        (action_type, recipient_person_id, f"{reason_prefix}%"),
+    ).fetchone()
+
+
+def _request_assistance_plan(
+    *,
+    message: str,
+    need_type: str,
+    action_type: str,
+    recipient: sqlite3.Row,
+    history: list[dict[str, str]],
+    events: list[dict[str, Any]],
+    memories: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not OPENAI_API_KEY:
+        return None
+    system = (
+        "You are the planning component for Anchor, a companion for an older adult. Decide whether "
+        "the user message expresses the supplied CANDIDATE_NEED. If it does, write a concise "
+        "reason, a proposed communication purpose, and a warm conversational response that offers "
+        "to prepare the action for the VERIFIED_RECIPIENT and asks for confirmation. Use only the "
+        "provided caregiver-confirmed context. Never choose a different recipient. Never say a "
+        "call or message was sent, placed, completed, or executed. Never advise changing, skipping, "
+        "or increasing medication. Do not classify emergencies; emergency handling happens before "
+        "this planner. Return JSON matching the schema."
+    )
+    context = {
+        "user_message": message,
+        "candidate_need": need_type,
+        "candidate_action_type": action_type,
+        "verified_recipient": {
+            "id": recipient["id"],
+            "name": recipient["name"],
+            "relationship": recipient["relationship"],
+            "description": recipient["description"],
+        },
+        "recent_conversation": history,
+        "scheduled_events": events,
+        "relevant_caregiver_memories": memories,
+    }
+    payload = json.dumps(
+        {
+            "model": OPENAI_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(context)},
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "anchor_assistance_plan",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "should_propose": {"type": "boolean"},
+                            "need_type": {
+                                "type": "string",
+                                "enum": [
+                                    "MEDICATION_REFILL",
+                                    "MEDICATION_LOCATION",
+                                    "APPOINTMENT_CHANGE",
+                                    "FAMILY_CONTACT",
+                                    "NONE",
+                                ],
+                            },
+                            "reason": {"type": "string"},
+                            "proposed_content": {"type": "string"},
+                            "response": {"type": "string"},
+                        },
+                        "required": [
+                            "should_propose",
+                            "need_type",
+                            "reason",
+                            "proposed_content",
+                            "response",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "temperature": 0.2,
+            "max_tokens": 250,
+            "store": False,
+        }
+    ).encode()
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            body = json.loads(response.read())
+        return json.loads(body["choices"][0]["message"]["content"])
+    except (KeyError, TypeError, ValueError, urllib.error.URLError, TimeoutError):
+        return None
+
+
+def _safe_plan(
+    plan: dict[str, Any] | None, *, need_type: str, recipient_name: str
+) -> bool:
+    if not plan or not plan.get("should_propose") or plan.get("need_type") != need_type:
+        return False
+    values = [plan.get("reason"), plan.get("proposed_content"), plan.get("response")]
+    if not all(isinstance(value, str) and 0 < len(value.strip()) <= 2000 for value in values):
+        return False
+    combined = normalize(" ".join(values))
+    if any(phrase in combined for phrase in UNSAFE_COMPLETION_PHRASES):
+        return False
+    if any(
+        phrase in combined
+        for phrase in ("double the dose", "skip a dose", "stop taking", "take extra")
+    ):
+        return False
+    return normalize(recipient_name) in normalize(plan["response"])
+
+
+def _implicit_action_result(
+    database: sqlite3.Connection,
+    *,
+    message: str,
+    source_message_id: int,
+    history: list[dict[str, str]],
+) -> CommunicationTurnResult | None:
+    need_type = _implicit_need(message, history)
+    if need_type is None:
+        return None
+    if need_type == "MEDICATION_LOCATION":
+        storage = _medication_storage_memory(database)
+        if storage is not None:
+            return CommunicationTurnResult(
+                f"The caregiver notes say {storage['content'][0].lower() + storage['content'][1:]}",
+                grounded=True,
+                sources=[{"type": "memory", "id": storage["id"]}],
+            )
+        recipient = _caregiver_contact(database)
+        action_type = "CAREGIVER_ASSISTANCE"
+        reason_prefix = "Medication location assistance requested."
+        fallback_content = "Help locate the user's medication safely."
+        fallback_response = (
+            f"I don't have a verified storage location. I can prepare a request for "
+            f"{recipient['name']} to help locate it. Would you like me to do that?"
+            if recipient
+            else "I don't have a verified storage location. Which approved caregiver should help?"
+        )
+    elif need_type in {"MEDICATION_REFILL", "APPOINTMENT_CHANGE"}:
+        recipient = _medical_contact(database, message, history)
+        action_type = "CALL_REQUESTED"
+        if need_type == "MEDICATION_REFILL":
+            reason_prefix = "Medication refill assistance requested."
+            fallback_content = "Ask about arranging a prescription refill."
+            unknown_response = (
+                "I can help prepare a refill inquiry, but I don't have a verified prescribing "
+                "office or medical contact. Which approved contact should it be for?"
+            )
+        else:
+            reason_prefix = "Appointment change assistance requested."
+            fallback_content = "Ask about changing the scheduled appointment."
+            unknown_response = (
+                "I can help prepare an appointment-change request, but I don't have a verified "
+                "office contact. Which approved contact should it be for?"
+            )
+        fallback_response = (
+            f"I can help prepare that request for {recipient['name']}. Would you like me to?"
+            if recipient
+            else unknown_response
+        )
+    else:
+        recipient = _family_contact(database, message, history)
+        action_type = "CALL_REQUESTED"
+        reason_prefix = "Family call assistance requested."
+        fallback_content = "Prepare a call so the user can catch up with this family member."
+        fallback_response = (
+            f"I can help prepare a call with {recipient['name']}. Would you like me to?"
+            if recipient
+            else "Who would you like to talk with?"
+        )
+
+    if recipient is None:
+        return CommunicationTurnResult(fallback_response)
+    existing = _unresolved_issue_action(
+        database,
+        action_type=action_type,
+        recipient_person_id=recipient["id"],
+        reason_prefix=reason_prefix,
+    )
+    if existing is not None:
+        return CommunicationTurnResult(
+            f"I still have that request for {recipient['name']} ready for your confirmation. "
+            "Nothing has been sent or called.",
+            existing["id"],
+            True,
+            [{"type": "person", "id": recipient["id"]}],
+        )
+
+    event_rows = database.execute(
+        """SELECT * FROM events WHERE status = 'scheduled'
+        ORDER BY start_time LIMIT 10"""
+    ).fetchall()
+    memory_rows = database.execute(
+        "SELECT * FROM memories ORDER BY created_at DESC, id DESC LIMIT 10"
+    ).fetchall()
+    plan = _request_assistance_plan(
+        message=message,
+        need_type=need_type,
+        action_type=action_type,
+        recipient=recipient,
+        history=history,
+        events=[dict(row) for row in event_rows],
+        memories=[dict(row) for row in memory_rows],
+    )
+    if _safe_plan(plan, need_type=need_type, recipient_name=recipient["name"]):
+        reason = f"{reason_prefix} {plan['reason'].strip()}"
+        proposed_content = plan["proposed_content"].strip()
+        response = plan["response"].strip()
+    else:
+        reason = reason_prefix
+        proposed_content = fallback_content
+        response = fallback_response
+    action, _ = create_action(
+        database,
+        action_type=action_type,
+        recipient_person_id=recipient["id"],
+        reason=reason,
+        proposed_content=proposed_content,
+        source_conversation_message_id=source_message_id,
+    )
+    return CommunicationTurnResult(
+        response,
+        action["id"],
+        True,
+        [{"type": "person", "id": recipient["id"]}],
+    )
+
+
 def process_communication_turn(
     database: sqlite3.Connection, message: str, source_message_id: int
 ) -> CommunicationTurnResult | None:
     normalized = normalize(message)
+    history = _recent_context(database)
     urgent = any(phrase in normalized for phrase in EMERGENCY_PHRASES | URGENT_HELP_PHRASES)
     if urgent:
-        recipient, _ = resolve_recipient(database, "caregiver")
+        recipient = _caregiver_contact(database)
         action, _ = create_action(
             database,
             action_type="URGENT_HELP_REQUESTED",
@@ -431,10 +878,22 @@ def process_communication_turn(
             action["id"],
         )
 
-    if normalized in {"i need help", "please help me"} or any(
-        phrase in normalized for phrase in ASSISTANCE_PHRASES
-    ):
-        recipient, _ = resolve_recipient(database, "caregiver")
+    implicit_result = _implicit_action_result(
+        database,
+        message=message,
+        source_message_id=source_message_id,
+        history=history,
+    )
+    if implicit_result is not None:
+        return implicit_result
+
+    if normalized in GENERAL_HELP_PHRASES:
+        return CommunicationTurnResult(
+            "Of course. What are you having trouble with, and what kind of help would be useful?"
+        )
+
+    if any(phrase in normalized for phrase in ASSISTANCE_PHRASES):
+        recipient = _caregiver_contact(database)
         if recipient is None:
             return CommunicationTurnResult(
                 "I can record that you need help, but there isn't an approved caregiver contact yet."

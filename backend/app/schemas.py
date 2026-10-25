@@ -410,6 +410,7 @@ class ChatResponse(StrictModel):
     grounded: bool
     sources: list[Source]
     handoff_offered: bool
+    action: CommunicationAction | None = None
 
 
 class ConversationContext(StrictModel):
